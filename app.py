@@ -4,7 +4,7 @@ import folium
 from streamlit_folium import st_folium
 
 # =========================
-# DADOS INICIAIS
+# DADOS INICIAIS (agora com URL)
 # =========================
 data = [
     {
@@ -18,7 +18,8 @@ data = [
         "data_types": "Spatial (building footprints, informal settlement boundaries); Quantitative (deprivation indicators)",
         "description": "High-resolution mapping of deprived / informal areas, combining satellite imagery with community validation and ward-level indicators.",
         "contact": "University of Lagos / Durham University",
-        "access": "Partly restricted; request via IDEAMAPS team."
+        "access": "Partly restricted; request via IDEAMAPS team.",
+        "url": "https://ideamapsnetwork.org"  # ajuste este link
     },
     {
         "country": "Bangladesh",
@@ -31,7 +32,8 @@ data = [
         "data_types": "Spatial (GPS of drug sellers); Qualitative (provider interviews)",
         "description": "Identification of formal and informal drug sellers in Dhaka wards, linked to health system access and vulnerabilities.",
         "contact": "University of York / CHORUS Bangladesh team",
-        "access": "Internal / ethics-controlled"
+        "access": "Internal / ethics-controlled",
+        "url": "https://chorus.york.ac.uk"  # ajuste este link
     },
     {
         "country": "Kenya",
@@ -44,7 +46,8 @@ data = [
         "data_types": "Spatial (informal settlement boundaries); Qualitative (community validation)",
         "description": "Co-produced polygons of informal settlements using local knowledge, used to train global informal-settlement detection models.",
         "contact": "University of Nairobi / Durham University",
-        "access": "Some layers public; others restricted"
+        "access": "Some layers public; others restricted",
+        "url": "https://ideamapsnetwork.org"  # ajuste este link
     },
 ]
 
@@ -60,7 +63,7 @@ st.set_page_config(
 )
 
 # =========================
-# HEADER BONITO
+# HEADER
 # =========================
 st.markdown(
     """
@@ -84,7 +87,7 @@ st.markdown(
 )
 
 # =========================
-# SIDEBAR (FILTRO)
+# SIDEBAR (FILTROS)
 # =========================
 st.sidebar.markdown(
     """
@@ -108,16 +111,16 @@ else:
     df = df_all.copy()
 
 # =========================
-# MAPA (AGORA DARK)
+# MAPA (DARK) + LINK NO POPUP
 # =========================
 
-# agrupar por cidade pra não repetir ponto idêntico
+# agrupar por cidade para não repetir o mesmo ponto
 grouped = (
     df.groupby(["country", "city", "lat", "lon"], as_index=False)
     .agg({"project_name": list})
 )
 
-# mapa base com tile escuro
+# mapa base escuro
 m = folium.Map(
     location=[15, 0],
     zoom_start=2,
@@ -131,26 +134,38 @@ for _, row in grouped.iterrows():
     lat = row["lat"]
     lon = row["lon"]
 
-    # todos os projetos naquela cidade
+    # todos os projetos daquela cidade (incluindo URL)
     project_list = df_all[
         (df_all["country"] == country) & (df_all["city"] == city)
-    ][["project_name", "years", "status"]].to_dict(orient="records")
+    ][["project_name", "years", "status", "url"]].to_dict(orient="records")
 
-    # popup HTML custom
+    # popup HTML com link clicável (🔗 Open project)
     popup_lines = [f"<b>{city}, {country}</b><br/>"]
     popup_lines.append("<ul style='padding-left:1rem;margin:0;'>")
     for proj in project_list:
+        link_html = (
+            f"<br/><a href='{proj['url']}' target='_blank' "
+            f"style='color:#38bdf8; text-decoration:none;'>🔗 Open project</a>"
+            if proj.get("url") else ""
+        )
         popup_lines.append(
             f"<li style='font-size:0.8rem; line-height:1.2;'>"
             f"<b>{proj['project_name']}</b>"
+            f"{link_html}"
             f"<br/><span style='color:#888'>Years: {proj['years']} — Status: {proj['status']}</span>"
             f"</li>"
         )
     popup_lines.append("</ul>")
+
     html_popup = "<div style='font-size:0.8rem; color:#fff;'>" + "".join(popup_lines) + "</div>"
 
     any_active = any(p["status"].lower() == "active" for p in project_list)
     color = "#38bdf8" if any_active else "#facc15"
+
+    # tooltip não aceita link clicável; mostra nome do 1º projeto como texto
+    tooltip_text = f"{city}, {country}"
+    if project_list:
+        tooltip_text += f" — {project_list[0]['project_name']}"
 
     folium.CircleMarker(
         location=[lat, lon],
@@ -158,17 +173,17 @@ for _, row in grouped.iterrows():
         color=color,
         fill=True,
         fill_opacity=0.85,
-        popup=folium.Popup(html_popup, max_width=300),
-        tooltip=f"{city}, {country}",
+        popup=folium.Popup(html_popup, max_width=320),
+        tooltip=tooltip_text,
     ).add_to(m)
 
-# desenhar mapa no app
+# desenhar mapa
 st_folium(m, height=500, width=None)
 
 st.markdown("---")
 
 # =========================
-# LISTA DE PROJETOS (CARDS BONITOS)
+# LISTA DE PROJETOS (CARDS COM LINK)
 # =========================
 st.markdown(
     "<h3 style='color:#fff; margin-bottom:0.5rem;'>Projects</h3>"
@@ -177,6 +192,13 @@ st.markdown(
 )
 
 for _, row in df.iterrows():
+    url_html = (
+        f"<a href='{row['url']}' target='_blank' "
+        f"style='color:#38bdf8; text-decoration:none;'>🔗 Open project</a>"
+        if pd.notna(row.get("url")) and str(row.get("url")).strip() != ""
+        else ""
+    )
+
     st.markdown(
         f"""
         <div style="
@@ -208,6 +230,10 @@ for _, row in df.iterrows():
             <b>Contact:</b> {row['contact']}<br/>
             <b>Access:</b> {row['access']}
           </div>
+
+          <div style="margin-top:8px;">
+            {url_html}
+          </div>
         </div>
         """,
         unsafe_allow_html=True
@@ -216,7 +242,7 @@ for _, row in df.iterrows():
 st.markdown("---")
 
 # =========================
-# FORMULÁRIO (AINDA NÃO SALVA, SÓ GERA BLOCO)
+# FORMULÁRIO (gera bloco para copiar)
 # =========================
 st.header("Add new project (manual capture, not saved)")
 
@@ -232,6 +258,7 @@ with st.form("add_project_form"):
     new_desc = st.text_area("Short description")
     new_contact = st.text_input("Contact / Responsible institution")
     new_access = st.text_input("Access / License / Ethics")
+    new_url = st.text_input("Project URL (optional)")
 
     submitted = st.form_submit_button("Generate row for copy-paste")
 
@@ -248,7 +275,7 @@ with st.form("add_project_form"):
             "description": new_desc,
             "contact": new_contact,
             "access": new_access,
+            "url": new_url,
         }
-
         st.success("Copy this and add to your dataset list in the code or in a CSV:")
         st.code(new_row, language="python")
