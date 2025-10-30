@@ -262,20 +262,57 @@ with st.form("add_project_form"):
 
     submitted = st.form_submit_button("Generate row for copy-paste")
 
-    if submitted:
-        new_row = {
-            "country": new_country,
-            "city": new_city,
-            "lat": new_lat,
-            "lon": new_lon,
-            "project_name": new_name,
-            "years": new_years,
-            "status": new_status,
-            "data_types": new_types,
-            "description": new_desc,
-            "contact": new_contact,
-            "access": new_access,
-            "url": new_url,
-        }
-        st.success("Copy this and add to your dataset list in the code or in a CSV:")
-        st.code(new_row, language="python")
+    import requests
+
+# ==============================================================
+# QUANDO O FORMULÁRIO É ENVIADO
+# ==============================================================
+if submitted:
+    new_row = {
+        "country": new_country,
+        "city": new_city,
+        "lat": new_lat,
+        "lon": new_lon,
+        "project_name": new_name,
+        "years": new_years,
+        "status": new_status,
+        "data_types": new_types,
+        "description": new_desc,
+        "contact": new_contact,
+        "access": new_access,
+        "url": new_url,
+    }
+
+    st.success("✅ Submission received. An email notification has been sent to the IDEAMAPS team.")
+
+    # Mostra também o bloco pra referência
+    st.code(new_row, language="python")
+
+    # ===== Enviar e-mail via EmailJS =====
+    EMAILJS_SERVICE_ID = "service_ygft3w1"     # <- substitua pelo seu
+    EMAILJS_TEMPLATE_ID = "template_7spl6yj"   # <- substitua pelo seu
+    EMAILJS_PUBLIC_KEY = "wbC-hdEG56dF4ebls"             # <- substitua pelo seu
+
+
+    # Monta payload
+    payload = {
+        "service_id": EMAILJS_SERVICE_ID,
+        "template_id": EMAILJS_TEMPLATE_ID,
+        "user_id": EMAILJS_PUBLIC_KEY,
+        "template_params": new_row,
+    }
+
+    # Envia requisição POST
+    try:
+        response = requests.post(
+            "https://api.emailjs.com/api/v1.0/email/send",
+            json=payload,
+            timeout=10
+        )
+        if response.status_code == 200:
+            st.info("📨 Email sent successfully!")
+        else:
+            st.warning(f"⚠️ Email not sent. Status: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error sending email: {e}")
+
