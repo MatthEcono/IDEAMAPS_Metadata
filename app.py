@@ -382,11 +382,11 @@ for _, row in df.iterrows():
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 9) Formulário — país com auto-preenchimento de lat/lon
+# 9) Formulário — país com auto-preenchimento de lat/lon (sem callback dentro do form)
 # -----------------------------------------------------------------------------
 st.header("Add new project (goes to review queue)")
 
-# inicializa session_state (uma vez)
+# inicializa session_state
 if "form_country" not in st.session_state:
     st.session_state.form_country = ""
 if "lat_input" not in st.session_state:
@@ -394,33 +394,39 @@ if "lat_input" not in st.session_state:
 if "lon_input" not in st.session_state:
     st.session_state.lon_input = 0.0
 
-def _on_country_change():
-    c = st.session_state.form_country
-    if c in COUNTRY_CENTER:
-        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[c]
-    else:
-        # mantém o que já estiver preenchido
-        pass
+def _apply_country_center(country: str):
+    """Atualiza lat/lon no session_state com base no país escolhido (se houver centro conhecido)."""
+    if country in COUNTRY_CENTER:
+        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[ country ]
 
-# opções de país: catálogo fixo + o que já existe no dataset
+# opções de país: catálogo fixo + já existentes no dataset
 form_country_options = sorted(set(list(COUNTRY_CENTER.keys()) + df_all["country"].dropna().tolist()))
 
+# --- IMPORTANTE: selectbox FORA do st.form (callback permitido aqui) ---
+st.subheader("Select country")
+st.caption("Ao escolher o país, latitude/longitude serão preenchidos automaticamente (você pode editar depois).")
+st.session_state.form_country = st.selectbox(
+    "Country",
+    options=[""] + form_country_options,
+    index=([""] + form_country_options).index(st.session_state.form_country) if st.session_state.form_country in ([""] + form_country_options) else 0,
+    key="country_selector_outside_form",
+    on_change=lambda: _apply_country_center(st.session_state.country_selector_outside_form),
+)
+
+# garante que form_country reflita a escolha atual
+if st.session_state.country_selector_outside_form != st.session_state.form_country:
+    st.session_state.form_country = st.session_state.country_selector_outside_form
+
+# --- Agora o FORM em si (sem callbacks) ---
 with st.form("add_project_form"):
-    new_country = st.selectbox(
-        "Country",
-        options=[""] + form_country_options,
-        index=0,
-        key="form_country",
-        on_change=_on_country_change,
-        help="Selecione um país para auto-preencher latitude/longitude (pode editar depois).",
-    )
-    new_city = st.text_input("City")
+    col1, col2 = st.columns(2)
+    with col1:
+        new_city = st.text_input("City")
+        new_lat = st.number_input("Latitude", value=float(st.session_state.lat_input), format="%.6f", key="lat_input")
+    with col2:
+        new_name = st.text_input("Project name")
+        new_lon = st.number_input("Longitude", value=float(st.session_state.lon_input), format="%.6f", key="lon_input")
 
-    # number_input com chaves para permitir atualização via session_state
-    new_lat = st.number_input("Latitude", value=float(st.session_state.lat_input), format="%.6f", key="lat_input")
-    new_lon = st.number_input("Longitude", value=float(st.session_state.lon_input), format="%.6f", key="lon_input")
-
-    new_name = st.text_input("Project name")
     new_years = st.text_input("Years (e.g. 2022–2024)")
     new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
     new_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
@@ -431,10 +437,10 @@ with st.form("add_project_form"):
 
     submitted = st.form_submit_button("Submit for review")
 
-# Quando envia
+# processamento da submissão
 if submitted:
     new_row = {
-        "country": new_country,
+        "country": st.session_state.form_country,
         "city": new_city,
         "lat": st.session_state.lat_input,
         "lon": st.session_state.lon_input,
@@ -462,3 +468,4 @@ if submitted:
 
     st.markdown("**Submission payload (for your records):**")
     st.code(new_row, language="python")
+
