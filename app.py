@@ -9,6 +9,7 @@ import re
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
+from typing import Optional, List, Tuple, Dict, Any
 
 # =============================================================================
 # 0) PAGE CONFIG
@@ -44,26 +45,45 @@ def _gs_client():
     except Exception as e:
         return None, f"Google Sheets auth error: {e}"
 
-def _gs_open_worksheet(ws_name: str):
+def _open_or_create_worksheet(ws_name: str, init_headers: Optional[List[str]] = None):
+    """Open a worksheet by name; if missing, create it and optionally write headers."""
     client, err = _gs_client()
     if err or client is None:
         return None, err or "Client unavailable."
+    ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
+    if not ss_id:
+        return None, "Please set SHEETS_SPREADSHEET_ID in secrets."
     try:
-        ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
-        if not ss_id:
-            return None, "Please set SHEETS_SPREADSHEET_ID in secrets."
-        ws = client.open_by_key(ss_id).worksheet(ws_name)
+        ss = client.open_by_key(ss_id)
+    except Exception as e:
+        return None, f"Failed to open spreadsheet: {e}"
+
+    try:
+        ws = ss.worksheet(ws_name)
         return ws, None
+    except gspread.exceptions.WorksheetNotFound:
+        try:
+            ncols = max(10, len(init_headers) if init_headers else 10)
+            ws = ss.add_worksheet(title=ws_name, rows=200, cols=ncols)
+            if init_headers:
+                ws.update('A1', [init_headers])
+            return ws, None
+        except Exception as e:
+            return None, f"Could not create worksheet '{ws_name}': {e}"
     except Exception as e:
         return None, f"Failed to open worksheet '{ws_name}': {e}"
 
+def _gs_open_worksheet(ws_name: str):
+    # Mantido para compatibilidade, mas preferimos _open_or_create_worksheet nos atalho abaixo
+    return _open_or_create_worksheet(ws_name, None)
+
 def _ws_projects():
     ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME") or "projects"
-    return _gs_open_worksheet(ws_name)
+    return _open_or_create_worksheet(ws_name, REQUIRED_HEADERS)
 
 def _ws_messages():
     ws_name = st.secrets.get("SHEETS_MESSAGES_WS") or "messages"
-    return _gs_open_worksheet(ws_name)
+    return _open_or_create_worksheet(ws_name, MESSAGE_HEADERS)
 
 def _col_letter(idx0: int) -> str:
     n = idx0 + 1
@@ -375,7 +395,7 @@ else:
 
         st.session_state["prefill_years"]       = str(sel.get("years",""))
         st.session_state["prefill_data_types"]  = str(sel.get("data_types",""))
-        st.session_state["prefill_description"] = str(df_projects.loc[df_view.index[df_view["__key__"]==selected_key][0]].get("description",""))
+        st.session_state["prefill_description"] = str(df_projects.loc[df_view.index[df_view]["__key__"]==selected_key][0]].get("description",""))  # noqa
         st.session_state["prefill_contact"]     = str(sel.get("contact",""))
         st.session_state["prefill_access"]      = str(sel.get("access",""))
         st.session_state["prefill_url"]         = str(sel.get("url",""))
@@ -722,3 +742,4 @@ else:
             """,
             unsafe_allow_html=True
         )
+
