@@ -148,15 +148,28 @@ def load_approved_projects():
         return FALLBACK_DF.copy(), False, f"Erro lendo planilha: {e}"
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
+    """
+    Escreve no Google Sheets com lat/lon como TEXTO (prefixo ') para evitar
+    conversões de locale (ponto↔vírgula). Usa value_input_option="RAW".
+    """
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err
     try:
+        def _fmt_txt(v):
+            try:
+                return f"'{float(v):.6f}'"  # apóstrofo força 'Plain text' no Sheets
+            except Exception:
+                return f"'{str(v)}'"
+
+        lat_txt = _fmt_txt(payload.get("lat", ""))
+        lon_txt = _fmt_txt(payload.get("lon", ""))
+
         row = {
             "country": payload.get("country", ""),
             "city": payload.get("city", ""),
-            "lat": payload.get("lat", ""),
-            "lon": payload.get("lon", ""),
+            "lat": lat_txt,
+            "lon": lon_txt,
             "project_name": payload.get("project_name", ""),
             "years": payload.get("years", ""),
             "status": payload.get("status", ""),
@@ -168,9 +181,10 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
+
         header = ws.row_values(1)
         values = [row.get(col, "") for col in header] if header else list(row.values())
-        ws.append_row(values)
+        ws.append_row(values, value_input_option="RAW")
         return True, "Salvo no Google Sheets."
     except Exception as e:
         return False, f"Erro ao gravar no Sheets: {e}"
@@ -200,6 +214,7 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
 
 # -----------------------------------------------------------------------------
 # 3b) Lista completa de países (arquivo local + fallback para gist)
+#      — lê SEMPRE como TEXTO (dtype='string') e só converte com parser seguro
 # -----------------------------------------------------------------------------
 COUNTRY_CSV_LOCAL = Path(__file__).parent / "country-coord.csv"
 GIST_COUNTRIES_RAW = (
@@ -208,18 +223,20 @@ GIST_COUNTRIES_RAW = (
 )
 
 def _try_read_countries_csv(src, sep=None, encoding="utf-8"):
-    """Tenta ler o CSV com diferentes separadores e encodings."""
+    """Tenta ler o CSV com diferentes separadores e encodings, como TEXTO."""
     if sep is not None:
-        return pd.read_csv(src, sep=sep, engine="python", on_bad_lines="skip", encoding=encoding)
+        return pd.read_csv(src, sep=sep, engine="python", on_bad_lines="skip",
+                           encoding=encoding, dtype="string")
     for _sep in [",", ";", r"\s{2,}"]:
         try:
-            return pd.read_csv(src, sep=_sep, engine="python", on_bad_lines="skip", encoding=encoding)
+            return pd.read_csv(src, sep=_sep, engine="python", on_bad_lines="skip",
+                               encoding=encoding, dtype="string")
         except Exception:
             continue
-    return pd.read_csv(src, engine="python", on_bad_lines="skip", encoding=encoding)
+    return pd.read_csv(src, engine="python", on_bad_lines="skip",
+                       encoding=encoding, dtype="string")
 
 def _pick_col(cols_lower, options):
-    """Retorna o nome da primeira coluna presente em cols_lower dentre options."""
     for opt in options:
         if opt in cols_lower:
             return opt
@@ -595,7 +612,7 @@ with colh3:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 14) Formulário de submissão
+# 14) Formulário de submissão (lat/lon travados e salvos como TEXTO no Sheets)
 # -----------------------------------------------------------------------------
 st.header("Add new project (goes to review queue)")
 
@@ -603,8 +620,11 @@ with st.form("add_project_form"):
     new_country = st.text_input("Country", value=st.session_state.form_country_text)
     new_city = st.text_input("City")
 
-    new_lat = st.number_input("Latitude", value=float(st.session_state.lat_input), format="%.6f", key="lat_input")
-    new_lon = st.number_input("Longitude", value=float(st.session_state.lon_input), format="%.6f", key="lon_input")
+    # ---- lat/lon só para exibição (travados) ----
+    lat_str = f"{float(st.session_state.lat_input):.6f}" if st.session_state.get("lat_input") is not None else ""
+    lon_str = f"{float(st.session_state.lon_input):.6f}" if st.session_state.get("lon_input") is not None else ""
+    st.text_input("Latitude (auto, travado)", value=lat_str, disabled=True)
+    st.text_input("Longitude (auto, travado)", value=lon_str, disabled=True)
 
     new_name = st.text_input("Project name")
     new_years = st.text_input("Years (e.g. 2022–2024)")
@@ -621,8 +641,9 @@ if submitted:
     new_row = {
         "country": new_country,
         "city": new_city,
-        "lat": st.session_state.lat_input,
-        "lon": st.session_state.lon_input,
+        # guardamos números aqui; a função append converte p/ TEXTO no Sheets
+        "lat": float(st.session_state.lat_input) if st.session_state.get("lat_input") is not None else "",
+        "lon": float(st.session_state.lon_input) if st.session_state.get("lon_input") is not None else "",
         "project_name": new_name,
         "years": new_years,
         "status": new_status,
