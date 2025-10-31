@@ -71,8 +71,8 @@ FALLBACK_DATA = [
     {
         "country": "BRASIL",
         "city": "Lagos",
-        "lat": -14,235,
-        "lon": -51,9253,
+        "lat": 14,235,
+        "lon": 51,9253,
         "project_name": "IDEAMAPS Lagos / Urban Deprivation Mapping",
         "years": "2021–2024",
         "status": "Active",
