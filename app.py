@@ -111,7 +111,7 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Erro no envio de e-mail: {e}"
 
 # =============================================================================
-# 2) LEITURA DO CSV DE PAÍSES (SEM FALLBACK ESTÁTICO)
+# 2) LEITURA DO CSV DE PAÍSES
 # =============================================================================
 COUNTRY_CSV_PATH = Path(__file__).parent / "country-coord.csv"
 
@@ -163,7 +163,7 @@ if st.sidebar.button("🔄 Checar atualizações"):
     st.rerun()
 
 # =============================================================================
-# 4) CARREGA DADOS DE PROJETOS
+# 4) CARREGA DADOS DE PROJETOS E MAPA
 # =============================================================================
 df_projects, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets:
@@ -171,31 +171,6 @@ if not from_sheets:
     if debug_msg:
         st.caption(debug_msg)
 
-# =============================================================================
-# 5) FUNÇÕES AUXILIARES
-# =============================================================================
-def get_country_center(name: str):
-    if not name:
-        return None, None
-    tpl = COUNTRY_CENTER_FULL.get(name)
-    if tpl:
-        try:
-            return float(tpl[0]), float(tpl[1])
-        except Exception:
-            return None, None
-    return None, None
-
-if "city_list" not in st.session_state:
-    st.session_state.city_list = []
-
-def _add_city_to_session(city_str: str):
-    city = (city_str or "").strip()
-    if city and city not in st.session_state.city_list:
-        st.session_state.city_list.append(city)
-
-# =============================================================================
-# 6) MAPA INTERATIVO
-# =============================================================================
 if not df_projects.empty:
     df_projects = df_projects.dropna(subset=["lat", "lon"])
     m = folium.Map(location=[0, 0], zoom_start=2, tiles="CartoDB dark_matter")
@@ -219,26 +194,25 @@ else:
     st.info("Nenhum projeto aprovado encontrado no momento.")
 
 # =============================================================================
-# 7) TABELA E DOWNLOAD
-# =============================================================================
-if not df_projects.empty:
-    st.subheader("Data on map (downloadable)")
-    cols_show = ["country", "city", "lat", "lon", "project_name", "years", "status", "url"]
-    tbl = (df_projects[cols_show].copy().sort_values(["country", "city", "project_name"]).reset_index(drop=True))
-    st.dataframe(tbl, use_container_width=True)
-
-    csv_bytes = tbl.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Download CSV", data=csv_bytes, file_name="ideamaps_on_map.csv", mime="text/csv")
-
-    html_bytes = tbl.to_html(index=False).encode("utf-8")
-    st.download_button("⬇️ Download HTML", data=html_bytes, file_name="ideamaps_on_map.html", mime="text/html")
-
-st.markdown("---")
-
-# =============================================================================
-# 8) FORMULÁRIO DE SUBMISSÃO
+# 5) FORMULÁRIO DE SUBMISSÃO (PAÍS↔CIDADE)
 # =============================================================================
 st.header("Add new project (goes to review queue)")
+
+if "city_list" not in st.session_state:
+    st.session_state.city_list = []
+
+def get_country_center(name: str):
+    tpl = COUNTRY_CENTER_FULL.get(name)
+    if tpl:
+        return float(tpl[0]), float(tpl[1])
+    return None, None
+
+def _add_city_entry(country, city):
+    """Adiciona par (country, city) à sessão."""
+    if country and city:
+        pair = f"{country} — {city}"
+        if pair not in st.session_state.city_list:
+            st.session_state.city_list.append(pair)
 
 with st.form("add_project_form", clear_on_submit=False):
     new_name = st.text_input("Project name", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
@@ -246,27 +220,22 @@ with st.form("add_project_form", clear_on_submit=False):
     countries_options = sorted(COUNTRY_CENTER_FULL.keys())
     selected_countries = st.multiselect("Countries (one or more)", options=countries_options, default=[])
 
-    lat_preview, lon_preview = "", ""
-    if len(selected_countries) == 1:
-        _lat, _lon = get_country_center(selected_countries[0])
-        lat_preview, lon_preview = f"{_lat:.6f}", f"{_lon:.6f}"
-
-    colc1, colc2 = st.columns([3, 1])
+    colc1, colc2, colc3 = st.columns([2, 2, 1])
     with colc1:
-        city_to_add = st.text_input("City (add one at a time)")
+        selected_country_for_city = st.selectbox("Select country for this city", options=selected_countries)
     with colc2:
+        city_to_add = st.text_input("City (type name)")
+    with colc3:
         st.write("")
         if st.form_submit_button("➕ Add city", use_container_width=True):
-            _add_city_to_session(city_to_add)
+            _add_city_entry(selected_country_for_city, city_to_add)
 
     if st.session_state.city_list:
         st.caption("Cities added:")
-        st.write(", ".join(st.session_state.city_list))
-        if st.checkbox("Clear cities"):
+        for item in st.session_state.city_list:
+            st.write(f"- {item}")
+        if st.checkbox("Clear all cities"):
             st.session_state.city_list = []
-
-    st.text_input("Latitude (auto, read-only)", value=lat_preview, disabled=True)
-    st.text_input("Longitude (auto, read-only)", value=lon_preview, disabled=True)
 
     new_years = st.text_input("Years (e.g. 2022–2024)")
     new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
@@ -281,33 +250,36 @@ with st.form("add_project_form", clear_on_submit=False):
 if submitted:
     if not new_name.strip():
         st.warning("Please provide a Project name.")
-    elif not selected_countries:
-        st.warning("Please select at least one country.")
+    elif not st.session_state.city_list:
+        st.warning("Please add at least one (country–city) pair.")
     else:
-        cities = st.session_state.city_list[:] or [""]
         total_rows, ok_all, msg_any = 0, True, None
 
-        for ctry in selected_countries:
-            lat, lon = get_country_center(ctry)
-            for city in cities:
-                payload = {
-                    "country": ctry,
-                    "city": city,
-                    "lat": lat,
-                    "lon": lon,
-                    "project_name": new_name,
-                    "years": new_years,
-                    "status": new_status,
-                    "data_types": new_types,
-                    "description": new_desc,
-                    "contact": new_contact,
-                    "access": new_access,
-                    "url": new_url,
-                }
-                ok_sheet, msg_sheet = append_submission_to_sheet(payload)
-                ok_all &= ok_sheet
-                msg_any = msg_sheet
-                total_rows += 1
+        for pair in st.session_state.city_list:
+            if "—" not in pair:
+                continue
+            country, city = [p.strip() for p in pair.split("—", 1)]
+            lat, lon = get_country_center(country)
+
+            payload = {
+                "country": country,
+                "city": city,
+                "lat": lat,
+                "lon": lon,
+                "project_name": new_name,
+                "years": new_years,
+                "status": new_status,
+                "data_types": new_types,
+                "description": new_desc,
+                "contact": new_contact,
+                "access": new_access,
+                "url": new_url,
+            }
+
+            ok_sheet, msg_sheet = append_submission_to_sheet(payload)
+            ok_all &= ok_sheet
+            msg_any = msg_sheet
+            total_rows += 1
 
         if ok_all:
             st.success(f"✅ Submission saved ({total_rows} row(s) added).")
@@ -317,8 +289,7 @@ if submitted:
 
         ok_mail, msg_mail = try_send_email_via_emailjs({
             "project_name": new_name,
-            "countries": ", ".join(selected_countries),
-            "cities": ", ".join([c for c in cities if c]),
+            "entries": ", ".join(st.session_state.city_list),
             "status": new_status,
             "years": new_years,
             "url": new_url,
@@ -331,8 +302,7 @@ if submitted:
         st.markdown("**Submission preview:**")
         st.code({
             "project_name": new_name,
-            "countries": selected_countries,
-            "cities": cities,
+            "entries": st.session_state.city_list,
             "years": new_years,
             "status": new_status,
         }, language="python")
