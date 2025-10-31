@@ -111,9 +111,6 @@ def load_approved_projects():
     try:
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
-        for c in ("lat", "lon"):
-        if c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
         if df.empty:
             return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
         # Filtra aprovados
