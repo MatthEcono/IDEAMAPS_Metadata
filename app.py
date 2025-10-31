@@ -6,6 +6,7 @@ from streamlit_folium import st_folium
 from datetime import datetime
 from pathlib import Path
 import re
+import uuid
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -26,12 +27,12 @@ REQUIRED_HEADERS = [
     "country","city","lat","lon","project_name","years","status",
     "data_types","description","contact","access","url",
     "submitter_email","is_edit","edit_target","edit_request",
+    # workflow fields for edits/approvals
+    "action","edit_group","previous_key",
     "approved","created_at"
 ]
-
 MESSAGE_HEADERS = ["name","email","message","approved","created_at"]
 
-# ---- generic openers ---------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _gs_client():
     try:
@@ -67,7 +68,6 @@ def _ws_messages():
     ws_name = st.secrets.get("SHEETS_MESSAGES_WS") or "messages"
     return _gs_open_worksheet(ws_name)
 
-# ---- utilities ---------------------------------------------------------------
 def _col_letter(idx0: int) -> str:
     n = idx0 + 1
     s = ""
@@ -130,7 +130,6 @@ def ensure_message_headers():
     except Exception as e:
         return False, f"Failed to adjust messages header: {e}"
 
-# ---- EmailJS -----------------------------------------------------------------
 def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
     svc = st.secrets.get("EMAILJS_SERVICE_ID")
     tpl = st.secrets.get("EMAILJS_TEMPLATE_ID")
@@ -147,7 +146,6 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
     except Exception as e:
         return False, f"Email error: {e}"
 
-# ---- parsing helpers ---------------------------------------------------------
 def _parse_number_loose(x):
     """Robust number parser for lat/lon."""
     if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -199,7 +197,7 @@ def load_country_centers():
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
 # =============================================================================
-# 3) REFRESH + HEADER
+# 3) HEADER + REFRESH
 # =============================================================================
 st.markdown(
     """
@@ -294,16 +292,20 @@ if not df_projects.empty:
                     proj_dict[pname]["urls"].add(url)
 
             lines = [
-                "<div style='font-size:0.9rem;color:#fff;'>",
+                "<div style='font-size:0.9rem; color:#0f172a;'>",
                 f"<b>{country}</b>",
-                "<ul style='padding-left:1rem;margin:0;'>"
+                "<ul style='padding-left:1rem; margin:0;'>"
             ]
             for pname, info in proj_dict.items():
                 cities_txt = ", ".join(sorted(info["cities"])) if info["cities"] else "—"
                 url_html = ""
                 if info["urls"]:
                     u_any = sorted(info["urls"])[0]
-                    url_html = f" — <a href='{u_any}' target='_blank' style='color:#38bdf8;'>link</a>"
+                    url_html = (
+                        " — "
+                        f"<a href='{u_any}' target='_blank' "
+                        "style='color:#2563eb; text-decoration:none;'>link</a>"
+                    )
                 lines.append(f"<li><b>{pname}</b> — {cities_txt}{url_html}</li>")
             lines.append("</ul></div>")
             html_block = "".join(lines)
@@ -317,7 +319,10 @@ if not df_projects.empty:
                 color=color,
                 fill=True,
                 fill_opacity=0.9,
-                tooltip=folium.Tooltip(html_block, sticky=True, direction="top"),
+                tooltip=folium.Tooltip(
+                    html_block, sticky=True, direction='top',
+                    style="background:#ffffff; color:#0f172a; border:1px solid #cbd5e1; border-radius:8px; padding:8px;"
+                ),
                 popup=folium.Popup(html_block, max_width=380),
             ).add_to(m)
 
@@ -332,7 +337,6 @@ st.markdown("---")
 # =============================================================================
 st.subheader("Data (downloadable & editable)")
 
-# --- Editor helpers
 EDIT_KEY_COLS = ["country", "city", "project_name"]
 
 def _mk_key(row: pd.Series) -> str:
@@ -411,7 +415,6 @@ else:
 
     st.markdown("")
 
-    # build keys
     orig = view_df.copy()
     orig["_key"] = orig.apply(_mk_key, axis=1)
     edited = edited_df.copy()
@@ -424,7 +427,6 @@ else:
     maybe_changed_keys = [k for k in edt_by_key.index if k in orig_by_key.index]
     deleted_keys = [k for k in orig_by_key.index if k not in edt_by_key.index]
 
-    # Submitter email for edits
     editor_email = st.text_input("Your email for review (required to submit changes)", key="editor_email")
 
     if st.button("Submit edits for review"):
@@ -433,7 +435,7 @@ else:
         else:
             total_rows, ok_all, last_msg = 0, True, None
 
-            # NEW rows → submission
+            # —— INCLUSIONS → NEW
             for k in new_keys:
                 row = edt_by_key.loc[k, present_cols].copy()
                 lat, lon = _coerce_lat_lon(row, COUNTRY_CENTER_FULL)
@@ -443,40 +445,69 @@ else:
                     "submitter_email": editor_email,
                     "is_edit": False,
                     "edit_target": row.get("project_name",""),
-                    "edit_request": "New submission via data editor"
+                    "edit_request": "New submission via data editor",
+                    "action": "NEW",
+                    "edit_group": "",
+                    "previous_key": "",
                 }
                 ok, msg = append_submission_to_sheet(payload)
                 ok_all &= ok; last_msg = msg; total_rows += 1
 
-            # CHANGED rows → edit
+            # —— EDITS → BEFORE + AFTER
             for k in maybe_changed_keys:
                 before = orig_by_key.loc[k, present_cols]
                 after  = edt_by_key.loc[k, present_cols]
                 if not before.equals(after):
-                    lat, lon = _coerce_lat_lon(after, COUNTRY_CENTER_FULL)
-                    payload = {
-                        **{col: after.get(col, "") for col in present_cols},
-                        "lat": lat, "lon": lon,
+                    group_id = f"edit-{uuid.uuid4().hex[:12]}"
+                    previous_key = _mk_key(before)
+
+                    lat_b, lon_b = _coerce_lat_lon(before, COUNTRY_CENTER_FULL)
+                    payload_before = {
+                        **{col: before.get(col, "") for col in present_cols},
+                        "lat": lat_b, "lon": lon_b,
                         "submitter_email": editor_email,
                         "is_edit": True,
                         "edit_target": after.get("project_name",""),
-                        "edit_request": _summarize_changes(before, after)
+                        "edit_request": "Snapshot BEFORE change",
+                        "action": "EDIT_BEFORE",
+                        "edit_group": group_id,
+                        "previous_key": previous_key,
                     }
-                    ok, msg = append_submission_to_sheet(payload)
-                    ok_all &= ok; last_msg = msg; total_rows += 1
+                    ok1, msg1 = append_submission_to_sheet(payload_before)
+                    ok_all &= ok1; last_msg = msg1; total_rows += 1
 
-            # DELETED rows → delete request (optional)
+                    lat_a, lon_a = _coerce_lat_lon(after, COUNTRY_CENTER_FULL)
+                    payload_after = {
+                        **{col: after.get(col, "") for col in present_cols},
+                        "lat": lat_a, "lon": lon_a,
+                        "submitter_email": editor_email,
+                        "is_edit": True,
+                        "edit_target": after.get("project_name",""),
+                        "edit_request": _summarize_changes(before, after),
+                        "action": "EDIT_AFTER",
+                        "edit_group": group_id,
+                        "previous_key": previous_key,
+                    }
+                    ok2, msg2 = append_submission_to_sheet(payload_after)
+                    ok_all &= ok2; last_msg = msg2; total_rows += 1
+
+            # —— DELETIONS → DELETE_REQUEST
             if consider_deletions:
                 for k in deleted_keys:
                     before = orig_by_key.loc[k, present_cols]
-                    payload = {
+                    lat_d, lon_d = _coerce_lat_lon(before, COUNTRY_CENTER_FULL)
+                    payload_del = {
                         **{col: before.get(col, "") for col in present_cols},
+                        "lat": lat_d, "lon": lon_d,
                         "submitter_email": editor_email,
                         "is_edit": True,
                         "edit_target": before.get("project_name",""),
-                        "edit_request": "DELETE REQUEST for this (country, city, project) row"
+                        "edit_request": "DELETE REQUEST for this (country, city, project) row",
+                        "action": "DELETE_REQUEST",
+                        "edit_group": f"del-{uuid.uuid4().hex[:12]}",
+                        "previous_key": _mk_key(before),
                     }
-                    ok, msg = append_submission_to_sheet(payload)
+                    ok, msg = append_submission_to_sheet(payload_del)
                     ok_all &= ok; last_msg = msg; total_rows += 1
 
             if total_rows == 0:
@@ -509,7 +540,6 @@ def _add_city_entry(country, city):
         if pair not in st.session_state.city_list:
             st.session_state.city_list.append(pair)
 
-# Countries (outside the form to update options live)
 countries_options = sorted(COUNTRY_CENTER_FULL.keys())
 st.session_state.countries_sel = st.multiselect(
     "Countries (one or more)",
@@ -519,7 +549,6 @@ st.session_state.countries_sel = st.multiselect(
 )
 options_for_city = st.session_state.get("countries_sel", [])
 
-# Main form
 with st.form("add_project_form", clear_on_submit=False):
     new_name = st.text_input("Project name", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
     submitter_email = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
@@ -576,6 +605,52 @@ with st.form("add_project_form", clear_on_submit=False):
 
     submitted = st.form_submit_button("Submit for review")
 
+def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
+    """Append a row to the PROJECTS sheet (plain text for lat/lon)."""
+    ws, err = _ws_projects()
+    if err or ws is None:
+        return False, err
+    try:
+        ensure_headers()
+        ensure_lat_lon_text_columns()
+
+        def _fmt_num_str(v):
+            try:
+                return f"{float(v):.6f}"
+            except Exception:
+                return ""
+
+        row = {
+            "country": payload.get("country", ""),
+            "city": payload.get("city", ""),
+            "lat": _fmt_num_str(payload.get("lat", "")),
+            "lon": _fmt_num_str(payload.get("lon", "")),
+            "project_name": payload.get("project_name", ""),
+            "years": payload.get("years", ""),
+            "status": payload.get("status", ""),
+            "data_types": payload.get("data_types", ""),
+            "description": payload.get("description", ""),
+            "contact": payload.get("contact", ""),
+            "access": payload.get("access", ""),
+            "url": payload.get("url", ""),
+            "submitter_email": payload.get("submitter_email", ""),
+            "is_edit": "TRUE" if payload.get("is_edit") else "FALSE",
+            "edit_target": payload.get("edit_target", ""),
+            "edit_request": payload.get("edit_request", ""),
+            # workflow fields
+            "action": payload.get("action", ""),
+            "edit_group": payload.get("edit_group", ""),
+            "previous_key": payload.get("previous_key", ""),
+            "approved": "FALSE",
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        }
+        header = ws.row_values(1)
+        values = [row.get(col, "") for col in header] if header else list(row.values())
+        ws.append_row(values, value_input_option="RAW")
+        return True, "Saved to Google Sheets."
+    except Exception as e:
+        return False, f"Write error: {e}"
+
 if submitted:
     if not new_name.strip():
         st.warning("Please provide a Project name.")
@@ -610,10 +685,13 @@ if submitted:
                 "contact": new_contact,
                 "access": new_access,
                 "url": new_url,
-                "submitter_email": submitter_email,
+                "submitter_email": submitter_email,        # email obrigatório
                 "is_edit": bool(is_edit),
                 "edit_target": edit_target if is_edit else "",
                 "edit_request": edit_request if is_edit else "",
+                "action": "NEW",                            # novo item
+                "edit_group": "",
+                "previous_key": "",
             }
 
             ok_sheet, msg_sheet = append_submission_to_sheet(payload)
@@ -653,7 +731,6 @@ st.markdown("---")
 # =============================================================================
 st.header("Community message board")
 
-# Submit form
 with st.form("message_form"):
     msg_name = st.text_input("Your full name", placeholder="First Last")
     msg_email = st.text_input("Email (optional)", placeholder="name@org.org")
@@ -692,7 +769,6 @@ if send_msg:
         else:
             st.warning(f"⚠️ {msg}")
 
-# Display approved messages
 @st.cache_data(show_spinner=False)
 def load_approved_messages():
     ws, err = _ws_messages()
