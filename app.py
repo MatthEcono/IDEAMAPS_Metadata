@@ -111,6 +111,9 @@ def load_approved_projects():
     try:
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
+        for c in ("lat", "lon"):
+        if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
         if df.empty:
             return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
         # Filtra aprovados
@@ -162,32 +165,44 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
 
 def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
     """
-    Envia e-mail via EmailJS usando secrets. Se não configurar, apenas retorna mensagem informativa.
+    Envia e-mail via EmailJS usando secrets. Suporta chave privada e domínio permitido.
     """
     svc = st.secrets.get("EMAILJS_SERVICE_ID")
     tpl = st.secrets.get("EMAILJS_TEMPLATE_ID")
-    key = st.secrets.get("EMAILJS_PUBLIC_KEY")
+    pub = st.secrets.get("EMAILJS_PUBLIC_KEY")
+    prv = st.secrets.get("EMAILJS_PRIVATE_KEY")  # opcional
+    origin = st.secrets.get("EMAILJS_ALLOWED_ORIGIN")  # opcional
 
-    if not (svc and tpl and key):
+    if not (svc and tpl and pub):
         return False, "EmailJS não configurado nas secrets; pulando envio."
+
+    payload = {
+        "service_id": svc,
+        "template_id": tpl,
+        "user_id": pub,
+        "template_params": template_params,
+    }
+    # Se estiver usando “Use Private Key”, envie o accessToken
+    if prv:
+        payload["accessToken"] = prv
+
+    headers = {}
+    if origin:
+        headers["Origin"] = origin
 
     try:
         resp = requests.post(
             "https://api.emailjs.com/api/v1.0/email/send",
-            json={
-                "service_id": svc,
-                "template_id": tpl,
-                "user_id": key,
-                "template_params": template_params,
-            },
+            json=payload,
+            headers=headers,
             timeout=12,
         )
         if resp.status_code == 200:
             return True, "Email enviado com sucesso."
-        else:
-            return False, f"EmailJS retornou status {resp.status_code}."
+        return False, f"EmailJS retornou status {resp.status_code}: {resp.text[:200]}"
     except Exception as e:
         return False, f"Falha no envio de e-mail: {e}"
+
 
 # -----------------------------------------------------------------------------
 # 3) UI — Header
