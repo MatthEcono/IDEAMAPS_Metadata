@@ -15,7 +15,7 @@ import folium
 from streamlit_folium import st_folium
 
 # =============================================================================
-# 0) PAGE CONFIG + LOGO
+# 0) PAGE CONFIG + LOGO (favicon forçado em base64 para “quebrar” cache do vermelho)
 # =============================================================================
 APP_DIR = Path(__file__).parent
 LOGO_PATH = APP_DIR / "ideamaps.png"
@@ -35,6 +35,16 @@ st.set_page_config(
     page_icon=_logo_img if _logo_img is not None else "🌍",
     layout="wide",
 )
+
+# Força favicon (e apple-touch) no <head> para evitar ícone vermelho por cache do navegador
+if _logo_b64:
+    st.markdown(
+        f"""
+        <link rel="icon" href="data:image/png;base64,{_logo_b64}">
+        <link rel="apple-touch-icon" href="data:image/png;base64,{_logo_b64}">
+        """,
+        unsafe_allow_html=True,
+    )
 
 # =============================================================================
 # 1) CONSTANTES / SHEETS / EMAILJS
@@ -97,7 +107,6 @@ def _ws_projects():
     return _open_or_create_worksheet(ws_name, REQUIRED_HEADERS)
 
 def _ws_messages():
-    # always use the "Public Messages" sheet
     return _open_or_create_worksheet(MESSAGES_SHEET_NAME, MESSAGE_HEADERS)
 
 def _col_letter(idx0: int) -> str:
@@ -415,9 +424,7 @@ else:
 
     if selected_key and st.button("✎ Edit this row"):
         sel = df_view[df_view["__key__"] == selected_key].iloc[0].to_dict()
-        idx_sel = df_view.index[df_view["__key____" if "__key__" not in df_view.columns else "__key__"] == selected_key][0]  # robust
-        if "__key__" in df_view.columns:
-            idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
+        idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
 
         st.session_state["_edit_mode"]  = True
         st.session_state["_before_row"] = df_projects.loc[idx_sel].to_dict()
@@ -505,20 +512,33 @@ with st.form("add_project_form", clear_on_submit=False):
         st.write("")
         add_one = st.form_submit_button("➕ Add to this country", use_container_width=True, disabled=not bool(options_for_city))
 
+    # --- ADD ONE: adiciona e LIMPA campo + rerun (evita duplicar por clique repetido)
     if add_one and selected_country_for_city and city_to_add.strip():
-        for c in [c.strip() for c in city_to_add.split(",") if c.strip()]:
+        cities = [c.strip() for c in city_to_add.split(",") if c.strip()]
+        for c in cities:
             _add_city_entry(selected_country_for_city, c)
+        # limpa inputs e roda novamente
+        st.session_state["city_to_add"] = ""
+        if options_for_city:
+            st.session_state["country_for_city"] = options_for_city[0]
+        st.rerun()
 
     add_all = st.form_submit_button(
         "➕ Add to ALL selected countries",
         use_container_width=True,
         disabled=not (options_for_city and city_to_add.strip())
     )
+
+    # --- ADD ALL: adiciona e LIMPA campo + rerun
     if add_all:
         cities_bulk = [c.strip() for c in city_to_add.split(",") if c.strip()]
         for ctry in options_for_city:
             for c in cities_bulk:
                 _add_city_entry(ctry, c)
+        st.session_state["city_to_add"] = ""
+        if options_for_city:
+            st.session_state["country_for_city"] = options_for_city[0]
+        st.rerun()
 
     if st.session_state.city_list:
         st.caption("Cities added (country — city):")
@@ -792,4 +812,3 @@ else:
             use_container_width=True,
             hide_index=True
         )
-
