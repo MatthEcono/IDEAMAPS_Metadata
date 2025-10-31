@@ -359,7 +359,7 @@ st.subheader("Browse existing entries")
 if df_projects.empty:
     st.info("No data to display yet.")
 else:
-    # chave única legível
+    # chave única legível para seleção
     def _mk_key(row: pd.Series) -> str:
         return " || ".join([
             str(row.get("project_name","")).strip() or "(unnamed)",
@@ -372,19 +372,32 @@ else:
     df_view = df_projects[table_cols].copy()
     df_view["__key__"] = df_projects.apply(_mk_key, axis=1)
 
-    # Mostra tabela somente-leitura
-    st.dataframe(df_view.drop(columns=["__key__"]), use_container_width=True, hide_index=True)
+    # Tabela somente leitura
+    st.dataframe(
+        df_view.drop(columns=["__key__"]),
+        use_container_width=True,
+        hide_index=True
+    )
 
     # Seletor de linha para edição
     options = df_view["__key__"].tolist()
-    selected_key = st.selectbox("Select a row to edit (loads into the submission form below)", options=[""]+options, index=0)
+    selected_key = st.selectbox(
+        "Select a row to edit (loads into the submission form below)",
+        options=[""] + options,
+        index=0
+    )
 
     # Botão: carregar no formulário para edição
     if selected_key and st.button("✎ Edit this row"):
-        sel = df_view[df_view["__key__"]==selected_key].iloc[0].to_dict()
+        # linha escolhida na visão
+        sel = df_view[df_view["__key__"] == selected_key].iloc[0].to_dict()
+
+        # índice correspondente no df_projects (para acessar colunas não exibidas)
+        idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
+
         # guarda o "before" completo no session_state para compor o EDIT
-        st.session_state["_edit_mode"] = True
-        st.session_state["_before_row"] = df_projects.loc[df_view.index[df_view["__key__"]==selected_key][0]].to_dict()
+        st.session_state["_edit_mode"]  = True
+        st.session_state["_before_row"] = df_projects.loc[idx_sel].to_dict()
 
         # prefill do formulário
         st.session_state["prefill_project_name"] = str(sel.get("project_name",""))
@@ -395,7 +408,7 @@ else:
 
         st.session_state["prefill_years"]       = str(sel.get("years",""))
         st.session_state["prefill_data_types"]  = str(sel.get("data_types",""))
-        st.session_state["prefill_description"] = str(df_projects.loc[df_view.index[df_view]["__key__"]==selected_key][0]].get("description",""))  # noqa
+        st.session_state["prefill_description"] = str(df_projects.loc[idx_sel].get("description",""))
         st.session_state["prefill_contact"]     = str(sel.get("contact",""))
         st.session_state["prefill_access"]      = str(sel.get("access",""))
         st.session_state["prefill_url"]         = str(sel.get("url",""))
@@ -405,7 +418,6 @@ else:
         st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
         st.rerun()
 
-st.markdown("---")
 
 # =============================================================================
 # 6) ADD / EDIT PROJECT (ALWAYS GOES TO REVIEW QUEUE)
