@@ -111,19 +111,35 @@ def load_approved_projects():
     try:
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
+
         if df.empty:
             return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
-        # Filtra aprovados
-        if "approved" in df.columns:
-            df = df[df["approved"].astype(str).str.upper().eq("TRUE")]
-        # Garante colunas básicas caso a aba ainda não tenha tudo
-        for col in ["country", "city", "lat", "lon", "project_name", "years", "status",
-                    "data_types", "description", "contact", "access", "url"]:
+
+        # Garante colunas básicas
+        needed = [
+            "country", "city", "lat", "lon", "project_name", "years", "status",
+            "data_types", "description", "contact", "access", "url", "approved"
+        ]
+        for col in needed:
             if col not in df.columns:
                 df[col] = ""
+
+        # >>> Conversão segura para numérico (NAN em casos inválidos)
+        for c in ("lat", "lon"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        # Filtra apenas aprovados
+        df = df[df["approved"].astype(str).str.upper().eq("TRUE")]
+
+        # Se após o filtro ficou vazio, evita quebrar o app
+        if df.empty:
+            return FALLBACK_DF.copy(), False, "Nenhum registro aprovado no Sheets; usando fallback local."
+
         return df, True, None
+
     except Exception as e:
         return FALLBACK_DF.copy(), False, f"Erro lendo a planilha: {e}"
+
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
     """
