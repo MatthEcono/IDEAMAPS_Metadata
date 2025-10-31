@@ -11,7 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # =============================================================================
-# 0) CONFIGURAÇÕES DE PÁGINA
+# 0) PAGE CONFIG
 # =============================================================================
 st.set_page_config(
     page_title="IDEAMAPS Global Metadata Explorer",
@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # =============================================================================
-# 1) CONEXÃO COM GOOGLE SHEETS / EMAILJS
+# 1) GOOGLE SHEETS / EMAILJS
 # =============================================================================
 @st.cache_resource(show_spinner=False)
 def _gs_worksheet():
@@ -48,38 +48,62 @@ def _col_letter(idx0: int) -> str:
     return s
 
 def ensure_lat_lon_text_columns():
-    """
-    Garante que as colunas 'lat' e 'lon' estejam como Plain text no Google Sheets.
-    """
+    """Força colunas 'lat' e 'lon' como Plain text (TEXT) no Sheets."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err or "Worksheet indisponível."
-
     try:
         header = ws.row_values(1)
         if not header:
             return False, "Sem cabeçalho na planilha."
-
         hdr_lower = [h.strip().lower() for h in header]
         if "lat" not in hdr_lower or "lon" not in hdr_lower:
             return False, "Cabeçalho precisa conter 'lat' e 'lon'."
-
         lat_idx = hdr_lower.index("lat")
         lon_idx = hdr_lower.index("lon")
         lat_col = _col_letter(lat_idx)
         lon_col = _col_letter(lon_idx)
-
         ws.format(f"{lat_col}:{lat_col}", {"numberFormat": {"type": "TEXT"}})
         ws.format(f"{lon_col}:{lon_col}", {"numberFormat": {"type": "TEXT"}})
         return True, "Colunas lat/lon formatadas como TEXT."
     except Exception as e:
         return False, f"Falha ao formatar colunas: {e}"
 
+def _parse_number_loose(x):
+    """
+    Parser tolerante:
+      - remove aspas simples/duplas e espaços
+      - trata última vírgula/ponto como separador decimal
+      - remove separadores de milhar
+    """
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    s = str(x).strip().strip("'").strip('"')
+    if not s:
+        return None
+    if ("," in s) or ("." in s):
+        last_comma = s.rfind(",")
+        last_dot   = s.rfind(".")
+        last_sep   = max(last_comma, last_dot)
+        if last_sep >= 0:
+            int_part  = re.sub(r"[^\d\-\+]", "", s[:last_sep]) or "0"
+            frac_part = re.sub(r"\D", "", s[last_sep+1:]) or "0"
+            try:
+                return float(f"{int_part}.{frac_part}")
+            except Exception:
+                pass
+    raw = re.sub(r"[^\d\-\+]", "", s)
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(s.replace(",", "."))
+        except Exception:
+            return None
+
 @st.cache_data(show_spinner=False)
 def load_approved_projects():
-    """
-    Lê apenas approved==TRUE. Faz parsing robusto de lat/lon (remove aspas, vírgulas etc.)
-    """
+    """Carrega approved==TRUE e normaliza lat/lon (robusto a aspas/locale)."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return pd.DataFrame(), False, err
@@ -88,29 +112,24 @@ def load_approved_projects():
         df = pd.DataFrame(rows)
         if df.empty:
             return pd.DataFrame(), False, "Planilha vazia."
-
         if "approved" in df.columns:
             df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
-
-        # normaliza lat/lon vindos como texto
-        for col in ("lat", "lon"):
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: _parse_number_loose(x))
-
+        if "lat" in df.columns:
+            df["lat"] = df["lat"].apply(_parse_number_loose)
+        if "lon" in df.columns:
+            df["lon"] = df["lon"].apply(_parse_number_loose)
         return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Erro lendo planilha: {e}"
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
     """
-    Escreve no Google Sheets sem aspas na frente de lat/lon.
-    As colunas 'lat' e 'lon' são previamente forçadas para Plain text.
+    Escreve uma linha no Sheets (Plain text para lat/lon, sem aspas).
     """
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err
     try:
-        # força formato TEXT nas colunas lat/lon
         ensure_lat_lon_text_columns()
 
         def _fmt_num_str(v):
@@ -135,7 +154,6 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
-
         header = ws.row_values(1)
         values = [row.get(col, "") for col in header] if header else list(row.values())
         ws.append_row(values, value_input_option="RAW")
@@ -146,7 +164,7 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
 def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
     svc = st.secrets.get("EMAILJS_SERVICE_ID")
     tpl = st.secrets.get("EMAILJS_TEMPLATE_ID")
-    key  = st.secrets.get("EMAILJS_PUBLIC_KEY")
+    key = st.secrets.get("EMAILJS_PUBLIC_KEY")
     if not (svc and tpl and key):
         return False, "EmailJS não configurado."
     try:
@@ -160,51 +178,15 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Erro no envio de e-mail: {e}"
 
 # =============================================================================
-# 2) LEITURA DO CSV DE PAÍSES (SEM FALLBACK ESTÁTICO)
+# 2) PAISES: CSV LOCAL (SEM FALLBACK)
 # =============================================================================
 COUNTRY_CSV_PATH = Path(__file__).parent / "country-coord.csv"
 
-def _parse_number_loose(x):
-    """
-    Parser tolerante: remove aspas simples/duplas, espaços, converte , para ., remove separadores,
-    e tenta float. Ex.: "'-34.000000'" -> -34.0 ; "1,234.56" -> 1234.56 ; "24,0" -> 24.0
-    """
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return None
-    s = str(x).strip().strip("'").strip('"')
-    if not s:
-        return None
-    # se tem apenas dígitos/.-,+ e vírgula, normaliza última vírgula/ponto como decimal
-    if ("," in s) or ("." in s):
-        last_comma = s.rfind(",")
-        last_dot   = s.rfind(".")
-        last_sep   = max(last_comma, last_dot)
-        if last_sep >= 0:
-            int_part = re.sub(r"[^\d\-\+]", "", s[:last_sep]) or "0"
-            frac_part = re.sub(r"\D", "", s[last_sep+1:]) or "0"
-            try:
-                return float(f"{int_part}.{frac_part}")
-            except Exception:
-                pass
-    # fallback: remove não-dígitos (exceto sinal) e tenta
-    raw = re.sub(r"[^\d\-\+]", "", s)
-    try:
-        return float(raw)
-    except Exception:
-        try:
-            return float(s.replace(",", "."))
-        except Exception:
-            return None
-
 @st.cache_data(show_spinner=False)
 def load_country_centers():
-    """
-    Lê country-coord.csv e retorna dict {country: (lat, lon)} + DataFrame base.
-    Assume colunas: 'Country', 'Latitude (average)', 'Longitude (average)'.
-    """
+    """Lê country-coord.csv e retorna {country: (lat, lon)} e DF."""
     df = pd.read_csv(COUNTRY_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
     df.columns = [c.strip().lower() for c in df.columns]
-    # nomes esperados no gist/CSV que você passou
     c_country = "country"
     c_lat = "latitude (average)"
     c_lon = "longitude (average)"
@@ -219,7 +201,7 @@ def load_country_centers():
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
 # =============================================================================
-# 3) HEADER E BOTÃO DE ATUALIZAÇÃO
+# 3) HEADER + REFRESH
 # =============================================================================
 st.markdown(
     """
@@ -246,7 +228,7 @@ if st.sidebar.button("🔄 Checar atualizações"):
     st.rerun()
 
 # =============================================================================
-# 4) CARREGA DADOS DE PROJETOS E MAPA
+# 4) CARREGAR PROJETOS + MAPA
 # =============================================================================
 df_projects, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets and debug_msg:
@@ -257,17 +239,18 @@ def _as_float(x):
     return float(v) if v is not None else None
 
 if not df_projects.empty:
-    # parse robusto (caso ainda existam registros antigos com aspas)
-    if "lat" in df_projects.columns:
-        df_projects["lat"] = df_projects["lat"].apply(_as_float)
-    if "lon" in df_projects.columns:
-        df_projects["lon"] = df_projects["lon"].apply(_as_float)
+    if "lat" in df_projects.columns: df_projects["lat"] = df_projects["lat"].apply(_as_float)
+    if "lon" in df_projects.columns: df_projects["lon"] = df_projects["lon"].apply(_as_float)
     df_map = df_projects.dropna(subset=["lat", "lon"]).copy()
 
     if df_map.empty:
         st.info("Não há pontos válidos para plotar (lat/lon ausentes).")
     else:
-        m = folium.Map(location=[df_map["lat"].mean(), df_map["lon"].mean()], zoom_start=2, tiles="CartoDB dark_matter")
+        m = folium.Map(
+            location=[df_map["lat"].mean(), df_map["lon"].mean()],
+            zoom_start=2,
+            tiles="CartoDB dark_matter"
+        )
         for _, row in df_map.iterrows():
             color = "#38bdf8" if str(row.get("status","")).lower() == "active" else "#facc15"
             folium.CircleMarker(
@@ -282,7 +265,7 @@ if not df_projects.empty:
 else:
     st.info("Nenhum projeto aprovado encontrado no momento.")
 
-# Tabela + download
+# Tabela + downloads
 if not df_projects.empty:
     st.subheader("Data on map (downloadable)")
     cols_show = ["country","city","lat","lon","project_name","years","status","url"]
@@ -291,7 +274,6 @@ if not df_projects.empty:
            .copy()
            .sort_values(["country","city","project_name"], na_position="last")
            .reset_index(drop=True))
-    # formata lat/lon na visualização
     if "lat" in tbl.columns:
         tbl["lat"] = tbl["lat"].apply(lambda x: f"{float(x):.6f}" if pd.notna(x) else "")
     if "lon" in tbl.columns:
@@ -307,21 +289,18 @@ if not df_projects.empty:
 st.markdown("---")
 
 # =============================================================================
-# 5) FORMULÁRIO DE SUBMISSÃO (PAÍS ↔ CIDADE)
+# 5) FORMULÁRIO: COUNTRY (fora do form) → CITY (no form)
 # =============================================================================
 st.header("Add new project (goes to review queue)")
 
-# sessão para pares adicionados
 if "city_list" not in st.session_state:
     st.session_state.city_list = []
 
 def get_country_center(name: str):
     tpl = COUNTRY_CENTER_FULL.get(name)
     if tpl:
-        try:
-            return float(tpl[0]), float(tpl[1])
-        except Exception:
-            return None, None
+        try: return float(tpl[0]), float(tpl[1])
+        except Exception: return None, None
     return None, None
 
 def _add_city_entry(country, city):
@@ -330,30 +309,28 @@ def _add_city_entry(country, city):
         if pair not in st.session_state.city_list:
             st.session_state.city_list.append(pair)
 
+# Countries (fora do form para atualizar options ao vivo)
+countries_options = sorted(COUNTRY_CENTER_FULL.keys())
+st.session_state.countries_sel = st.multiselect(
+    "Countries (one or more)",
+    options=countries_options,
+    default=st.session_state.get("countries_sel", []),
+    help="Select all countries covered by this project."
+)
+options_for_city = st.session_state.get("countries_sel", [])
+
+# Form principal
 with st.form("add_project_form", clear_on_submit=False):
-    # 1) Project name
     new_name = st.text_input("Project name", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
 
-    # 2) Countries (multi) — persistido na session_state
-    countries_options = sorted(COUNTRY_CENTER_FULL.keys())
-    st.multiselect(
-        "Countries (one or more)",
-        options=countries_options,
-        default=st.session_state.get("countries_sel", []),
-        key="countries_sel",
-        help="Select all countries covered by this project."
-    )
-    options_for_city = st.session_state.get("countries_sel", [])
-
-    # 3) Vincular cidade a um dos países selecionados
     colc1, colc2, colc3 = st.columns([2, 2, 1])
     with colc1:
         selected_country_for_city = st.selectbox(
             "Select country for this city",
             options=options_for_city,
             index=0 if options_for_city else None,
-            key="country_for_city",
             disabled=not bool(options_for_city),
+            key="country_for_city",
         )
     with colc2:
         city_to_add = st.text_input("City (type name)", key="city_to_add")
@@ -364,7 +341,6 @@ with st.form("add_project_form", clear_on_submit=False):
     if add_one and selected_country_for_city and city_to_add.strip():
         _add_city_entry(selected_country_for_city, city_to_add.strip())
 
-    # (Opcional) adicionar mesma cidade para todos os países selecionados
     add_all = st.form_submit_button(
         "➕ Add city to all selected countries",
         use_container_width=True,
@@ -374,7 +350,6 @@ with st.form("add_project_form", clear_on_submit=False):
         for ctry in options_for_city:
             _add_city_entry(ctry, city_to_add.strip())
 
-    # Lista de pares adicionados
     if st.session_state.city_list:
         st.caption("Cities added (country — city):")
         for item in st.session_state.city_list:
@@ -382,7 +357,6 @@ with st.form("add_project_form", clear_on_submit=False):
         if st.checkbox("Clear all cities"):
             st.session_state.city_list = []
 
-    # 4) Demais metadados
     new_years  = st.text_input("Years (e.g. 2022–2024)")
     new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
     new_types  = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
@@ -401,7 +375,6 @@ if submitted:
     elif not st.session_state.city_list:
         st.warning("Please add at least one (country — city) pair.")
     else:
-        # envia uma linha por par (country — city)
         total_rows, ok_all, msg_any = 0, True, None
         entries_preview = []
 
