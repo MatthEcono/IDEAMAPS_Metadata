@@ -34,51 +34,7 @@ st.set_page_config(
 # 1) Fallback local (projetos)
 # -----------------------------------------------------------------------------
 FALLBACK_DATA = [
-    {
-        "country": "Nigeria",
-        "city": "Lagos",
-        "lat": 6.5244,
-        "lon": 3.3792,
-        "project_name": "IDEAMAPS Lagos / Urban Deprivation Mapping",
-        "years": "2021–2024",
-        "status": "Active",
-        "data_types": "Spatial (building footprints, informal settlement boundaries); Quantitative (deprivation indicators)",
-        "description": "High-resolution mapping of deprived / informal areas, combining satellite imagery with community validation and ward-level indicators.",
-        "contact": "University of Lagos / Durham University",
-        "access": "Partly restricted; request via IDEAMAPS team.",
-        "url": "https://ideamapsnetwork.org",
-        "approved": "TRUE",
-    },
-    {
-        "country": "Bangladesh",
-        "city": "Dhaka",
-        "lat": 23.8103,
-        "lon": 90.4125,
-        "project_name": "CHORUS Bangladesh Informal Providers",
-        "years": "2024–2025",
-        "status": "Active",
-        "data_types": "Spatial (GPS of drug sellers); Qualitative (provider interviews)",
-        "description": "Identification of formal and informal drug sellers in Dhaka wards, linked to health system access and vulnerabilities.",
-        "contact": "University of York / CHORUS Bangladesh team",
-        "access": "Internal / ethics-controlled",
-        "url": "https://chorus.york.ac.uk",
-        "approved": "TRUE",
-    },
-    {
-        "country": "Kenya",
-        "city": "Nairobi",
-        "lat": -1.2921,
-        "lon": 36.8219,
-        "project_name": "IDEAMAPS Nairobi / Participatory Mapping",
-        "years": "2019–2022",
-        "status": "Legacy",
-        "data_types": "Spatial (informal settlement boundaries); Qualitative (community validation)",
-        "description": "Co-produced polygons of informal settlements using local knowledge, used to train global informal-settlement detection models.",
-        "contact": "University of Nairobi / Durham University",
-        "access": "Some layers public; others restricted",
-        "url": "https://ideamapsnetwork.org",
-        "approved": "TRUE",
-    },
+    
 ]
 FALLBACK_DF = pd.DataFrame(FALLBACK_DATA)
 
