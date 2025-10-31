@@ -194,7 +194,7 @@ def load_country_centers():
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
 # =============================================================================
-# 3) HEADER + REFRESH
+# 3) HEADER
 # =============================================================================
 st.markdown(
     """
@@ -211,15 +211,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-if st.sidebar.button("🔄 Check updates"):
-    load_approved_projects.clear()
-    load_country_centers.clear()
-    ensure_headers()
-    ensure_lat_lon_text_columns()
-    ensure_message_headers()
-    st.session_state["_last_refresh"] = datetime.utcnow().isoformat()
-    st.rerun()
 
 # =============================================================================
 # 4) LOAD APPROVED PROJECTS + MAP
@@ -246,6 +237,16 @@ def load_approved_projects():
         return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading projects: {e}"
+
+# ---- MOVIDO: botão de refresh agora fica DEPOIS da definição acima (evita NameError) ----
+if st.sidebar.button("🔄 Check updates"):
+    load_approved_projects.clear()
+    load_country_centers.clear()
+    ensure_headers()
+    ensure_lat_lon_text_columns()
+    ensure_message_headers()
+    st.session_state["_last_refresh"] = datetime.utcnow().isoformat()
+    st.rerun()
 
 df_projects, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets and debug_msg:
@@ -288,7 +289,6 @@ if not df_projects.empty:
                 if url:
                     proj_dict[pname]["urls"].add(url)
 
-            # ---------- FIXED: readable (dark) text inside white tooltip/popup ----------
             lines = [
                 "<div style='font-size:0.9rem; color:#0f172a;'>",
                 f"<b>{country}</b>",
@@ -388,9 +388,10 @@ else:
         use_container_width=True,
         key="projects_editor",
         column_config={
+            # >>>> rótulo trocado (sem alterar o nome da coluna no Sheets)
             "country": st.column_config.SelectboxColumn(
-                "country", options=sorted(COUNTRY_CENTER_FULL.keys()),
-                help="Country name (from master list)"
+                "Implementation countries", options=sorted(COUNTRY_CENTER_FULL.keys()),
+                help="Pick the country(ies) where the project is implemented."
             ),
             "status": st.column_config.SelectboxColumn(
                 "status", options=["Active","Legacy","Completed","Planning"]
@@ -511,10 +512,10 @@ def _add_city_entry(country, city):
 
 countries_options = sorted(COUNTRY_CENTER_FULL.keys())
 st.session_state.countries_sel = st.multiselect(
-    "Countries (one or more)",
+    "Implementation countries (one or more)",
     options=countries_options,
     default=st.session_state.get("countries_sel", []),
-    help="Select all countries covered by this project."
+    help="Select all countries where this project is implemented."
 )
 options_for_city = st.session_state.get("countries_sel", [])
 
@@ -522,40 +523,61 @@ with st.form("add_project_form", clear_on_submit=False):
     new_name = st.text_input("Project name", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
     submitter_email = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
 
+    st.markdown("**Cities covered**")
+    st.caption("Tip: add a city to one selected country or add to **all** selected countries. Use commas to add multiple cities at once.")
+
     colc1, colc2, colc3 = st.columns([2, 2, 1])
     with colc1:
         selected_country_for_city = st.selectbox(
-            "Select country for this city",
+            "Select implementation country for the city",
             options=options_for_city,
             index=0 if options_for_city else None,
             disabled=not bool(options_for_city),
             key="country_for_city",
         )
     with colc2:
-        city_to_add = st.text_input("City (type name)", key="city_to_add")
+        city_to_add = st.text_input("City (accepts multiple, separated by commas)", key="city_to_add")
     with colc3:
         st.write("")
-        add_one = st.form_submit_button("➕ Add city", use_container_width=True, disabled=not bool(options_for_city))
+        add_one = st.form_submit_button("➕ Add to this country", use_container_width=True, disabled=not bool(options_for_city))
 
+    # Add to selected single country
     if add_one and selected_country_for_city and city_to_add.strip():
-        _add_city_entry(selected_country_for_city, city_to_add.strip())
+        for c in [c.strip() for c in city_to_add.split(",") if c.strip()]:
+            _add_city_entry(selected_country_for_city, c)
 
+    # Add same city list to ALL selected countries
     add_all = st.form_submit_button(
-        "➕ Add city to all selected countries",
+        "➕ Add to ALL selected countries",
         use_container_width=True,
         disabled=not (options_for_city and city_to_add.strip())
     )
     if add_all:
+        cities_bulk = [c.strip() for c in city_to_add.split(",") if c.strip()]
         for ctry in options_for_city:
-            _add_city_entry(ctry, city_to_add.strip())
+            for c in cities_bulk:
+                _add_city_entry(ctry, c)
 
+    # Show current list with per-item remove buttons
     if st.session_state.city_list:
         st.caption("Cities added (country — city):")
-        for item in st.session_state.city_list:
-            st.write(f"- {item}")
-        if st.checkbox("Clear all cities"):
+        to_remove_idx = None
+        for i, item in enumerate(st.session_state.city_list):
+            c1, c2 = st.columns([6,1])
+            with c1:
+                st.write(f"- {item}")
+            with c2:
+                if st.form_submit_button("Remove", key=f"rm_{i}"):
+                    to_remove_idx = i
+        if to_remove_idx is not None:
+            st.session_state.city_list.pop(to_remove_idx)
+            st.experimental_rerun()
+
+        clear_all = st.checkbox("Clear all cities")
+        if clear_all:
             st.session_state.city_list = []
 
+    # Update/edit toggle (mantido, mas sem o campo 'status' no formulário)
     is_edit = st.checkbox("This is an update/edit to an existing entry", value=False)
     edit_target = ""
     edit_request = ""
@@ -565,7 +587,7 @@ with st.form("add_project_form", clear_on_submit=False):
         edit_request = st.text_area("Describe the changes to apply")
 
     new_years  = st.text_input("Years (e.g. 2022–2024)")
-    new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
+    # >>>> Removido: campo de status no formulário
     new_types  = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
     new_desc   = st.text_area("Short description")
     new_contact= st.text_input("Contact / Responsible institution")
@@ -596,6 +618,7 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "lon": _fmt_num_str(payload.get("lon", "")),
             "project_name": payload.get("project_name", ""),
             "years": payload.get("years", ""),
+            # status vem vazio quando submetido pelo formulário novo
             "status": payload.get("status", ""),
             "data_types": payload.get("data_types", ""),
             "description": payload.get("description", ""),
@@ -620,7 +643,7 @@ if submitted:
     if not new_name.strip():
         st.warning("Please provide a Project name.")
     elif not st.session_state.get("countries_sel"):
-        st.warning("Please select at least one country.")
+        st.warning("Please select at least one implementation country.")
     elif not st.session_state.city_list and not st.session_state.get("countries_sel"):
         st.warning("Please add at least one (country — city) pair or select countries.")
     elif not submitter_email.strip():
@@ -629,6 +652,7 @@ if submitted:
         total_rows, ok_all, msg_any = 0, True, None
         entries_preview = []
 
+        # se não houver cidades, gera uma linha por país sem cidade
         pairs = st.session_state.city_list[:] if st.session_state.city_list else [f"{c} — " for c in st.session_state.get("countries_sel", [])]
 
         for pair in pairs:
@@ -644,7 +668,8 @@ if submitted:
                 "lon": lon,
                 "project_name": new_name,
                 "years": new_years,
-                "status": new_status,
+                # sem status no formulário → vazio
+                "status": "",
                 "data_types": new_types,
                 "description": new_desc,
                 "contact": new_contact,
@@ -671,7 +696,7 @@ if submitted:
         ok_mail, msg_mail = try_send_email_via_emailjs({
             "project_name": new_name,
             "entries": ", ".join([f"{p['country']} — {p['city']}" for p in entries_preview]),
-            "status": new_status,
+            "status": "",  # sem status
             "years": new_years,
             "url": new_url,
             "submitter_email": submitter_email,
