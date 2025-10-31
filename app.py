@@ -82,7 +82,7 @@ FALLBACK_DATA = [
 FALLBACK_DF = pd.DataFrame(FALLBACK_DATA)
 
 # -----------------------------------------------------------------------------
-# 2) Country helper
+# 2) Country helper (fallback estático local)
 # -----------------------------------------------------------------------------
 COUNTRY_CENTER = {
     "Nigeria": (9.0820, 8.6753),
@@ -108,7 +108,7 @@ def _gs_worksheet():
         ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
         ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")
         if not ss_id or not ws_name:
-            return None, "Secrets ausentes."
+            return None, "Secrets ausentes: SHEETS_SPREADSHEET_ID / SHEETS_WORKSHEET_NAME."
 
         creds_info = st.secrets.get("gcp_service_account")
         if not creds_info:
@@ -198,6 +198,69 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Erro no envio de e-mail: {e}"
 
 # -----------------------------------------------------------------------------
+# 3b) Países do Gist (lista completa) — cacheado com fallback
+# -----------------------------------------------------------------------------
+GIST_COUNTRIES_RAW = (
+    "https://gist.githubusercontent.com/metal3d/"
+    "5b925077e66194551df949de64e910f6/raw/country-coord.csv"
+)
+
+@st.cache_data(show_spinner=False)
+def load_country_centers():
+    """
+    Baixa a tabela do gist e retorna:
+      - dict: {Country -> (lat, lon)}
+      - DataFrame bruto (para debug)
+    Fallback: usa COUNTRY_CENTER estático.
+    """
+    try:
+        # separa por 2+ espaços para preservar nomes compostos
+        df = pd.read_csv(GIST_COUNTRIES_RAW, sep=r"\s{2,}", engine="python")
+        cols_lower = [c.strip().lower() for c in df.columns]
+        df.columns = cols_lower
+
+        def _find(options):
+            for opt in options:
+                if opt in cols_lower:
+                    return opt
+            return None
+
+        c_country = _find(["country"])
+        c_lat = _find(["latitude (average)", "latitude", "lat"])
+        c_lon = _find(["longitude (average)", "longitude", "lon"])
+        if not (c_country and c_lat and c_lon):
+            raise ValueError("Colunas esperadas não encontradas no CSV do gist.")
+
+        def _num(x):
+            if pd.isna(x):
+                return None
+            t = str(x).strip()
+            if ("," not in t) and ("." not in t):
+                digits = re.sub(r"[^\d\-\+]", "", t)
+                return float(digits) if digits else None
+            last_comma = t.rfind(","); last_dot = t.rfind(".")
+            last_sep_idx = max(last_comma, last_dot)
+            int_part = re.sub(r"[^\d\-\+]", "", t[:last_sep_idx]) or "0"
+            frac_part = re.sub(r"\D", "", t[last_sep_idx+1:]) or "0"
+            return float(f"{int_part}.{frac_part}")
+
+        df["__lat"] = df[c_lat].apply(_num)
+        df["__lon"] = df[c_lon].apply(_num)
+        df = df.dropna(subset=["__lat", "__lon"])
+
+        mapping = {row[c_country]: (float(row["__lat"]), float(row["__lon"])) for _, row in df.iterrows()}
+        return mapping, df
+
+    except Exception as e:
+        st.caption(f"⚠️ Países do gist indisponíveis, usando fallback local. Motivo: {e}")
+        return COUNTRY_CENTER.copy(), pd.DataFrame(
+            [{"country": k, "latitude": v[0], "longitude": v[1]} for k, v in COUNTRY_CENTER.items()]
+        )
+
+# carrega países completos (ou fallback)
+COUNTRY_CENTER_FULL, _df_countries_raw = load_country_centers()
+
+# -----------------------------------------------------------------------------
 # 4) Header
 # -----------------------------------------------------------------------------
 st.markdown(
@@ -216,12 +279,14 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+st.caption(f"🌐 Countries loaded: {len(COUNTRY_CENTER_FULL)}")
 
 # -----------------------------------------------------------------------------
-# 5) Botão para atualizar dados (limpa cache e reroda)
+# 5) Botão para atualizar dados (limpa caches e reroda)
 # -----------------------------------------------------------------------------
 if st.sidebar.button("🔄 Checar atualizações (Google Sheets)"):
     load_approved_projects.clear()
+    load_country_centers.clear()
     st.session_state["_last_refresh"] = datetime.utcnow().isoformat()
     st.rerun()
 
@@ -461,14 +526,14 @@ else:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 13) Country helper (prefill)
+# 13) Country helper (prefill) — usando lista completa do gist
 # -----------------------------------------------------------------------------
 st.subheader("Country helper (prefill)")
 colh1, colh2, colh3 = st.columns([2,1,1])
 with colh1:
     helper_choice = st.selectbox(
         "Choose a country to prefill (optional)",
-        [""] + sorted(COUNTRY_CENTER.keys()),
+        [""] + sorted(COUNTRY_CENTER_FULL.keys()),
         index=0
     )
 with colh2:
@@ -480,7 +545,7 @@ with colh2:
         st.session_state.form_country_text = ""
 
     if helper_choice:
-        cc = COUNTRY_CENTER.get(helper_choice)
+        cc = COUNTRY_CENTER_FULL.get(helper_choice)
         if cc:
             st.session_state.lat_input = float(cc[0])
             st.session_state.lon_input = float(cc[1])
