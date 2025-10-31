@@ -74,6 +74,7 @@ def _col_letter(idx0: int) -> str:
     return s
 
 def ensure_lat_lon_text_columns():
+    """Force 'lat' and 'lon' as Plain text (TEXT) in the PROJECTS sheet."""
     ws, err = _ws_projects()
     if err or ws is None:
         return False, err or "Worksheet unavailable."
@@ -95,6 +96,7 @@ def ensure_lat_lon_text_columns():
         return False, f"Failed to format lat/lon columns: {e}"
 
 def ensure_headers(required_headers=REQUIRED_HEADERS):
+    """Ensure the PROJECTS header has all required columns."""
     ws, err = _ws_projects()
     if err or ws is None:
         return False, err or "Worksheet unavailable."
@@ -110,6 +112,7 @@ def ensure_headers(required_headers=REQUIRED_HEADERS):
         return False, f"Failed to adjust projects header: {e}"
 
 def ensure_message_headers():
+    """Ensure the MESSAGES sheet header exists."""
     ws, err = _ws_messages()
     if err or ws is None:
         return False, err or "Messages worksheet unavailable."
@@ -141,22 +144,31 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Email error: {e}"
 
 def _parse_number_loose(x):
+    """Robust number parser for lat/lon."""
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return None
     s = str(x).strip().strip("'").strip('"')
-    if not s: return None
+    if not s:
+        return None
     if ("," in s) or ("." in s):
-        last_comma = s.rfind(","); last_dot = s.rfind("."); last_sep = max(last_comma, last_dot)
+        last_comma = s.rfind(",")
+        last_dot   = s.rfind(".")
+        last_sep   = max(last_comma, last_dot)
         if last_sep >= 0:
             int_part  = re.sub(r"[^\d\-\+]", "", s[:last_sep]) or "0"
             frac_part = re.sub(r"\D", "", s[last_sep+1:]) or "0"
-            try: return float(f"{int_part}.{frac_part}")
-            except: pass
+            try:
+                return float(f"{int_part}.{frac_part}")
+            except Exception:
+                pass
     raw = re.sub(r"[^\d\-\+]", "", s)
-    try: return float(raw)
-    except:
-        try: return float(s.replace(",", "."))
-        except: return None
+    try:
+        return float(raw)
+    except Exception:
+        try:
+            return float(s.replace(",", "."))
+        except Exception:
+            return None
 
 # =============================================================================
 # 2) LOAD COUNTRIES CSV (LOCAL ONLY)
@@ -165,9 +177,12 @@ COUNTRY_CSV_PATH = Path(__file__).parent / "country-coord.csv"
 
 @st.cache_data(show_spinner=False)
 def load_country_centers():
+    """Read country-coord.csv and return {country: (lat, lon)} and DF."""
     df = pd.read_csv(COUNTRY_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
     df.columns = [c.strip().lower() for c in df.columns]
-    c_country = "country"; c_lat = "latitude (average)"; c_lon = "longitude (average)"
+    c_country = "country"
+    c_lat = "latitude (average)"
+    c_lon = "longitude (average)"
     if c_country not in df.columns or c_lat not in df.columns or c_lon not in df.columns:
         raise RuntimeError("CSV must contain: 'Country', 'Latitude (average)', 'Longitude (average)'.")
     df["lat"] = df[c_lat].apply(_parse_number_loose)
@@ -202,6 +217,7 @@ st.markdown(
 # =============================================================================
 @st.cache_data(show_spinner=False)
 def load_approved_projects():
+    """Load approved==TRUE, normalize lat/lon."""
     ws, err = _ws_projects()
     if err or ws is None:
         return pd.DataFrame(), False, err
@@ -211,10 +227,13 @@ def load_approved_projects():
         if df.empty:
             return pd.DataFrame(), False, "Projects sheet is empty."
         for c in REQUIRED_HEADERS:
-            if c not in df.columns: df[c] = ""
+            if c not in df.columns:
+                df[c] = ""
         df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
-        if "lat" in df.columns: df["lat"] = df["lat"].apply(_parse_number_loose)
-        if "lon" in df.columns: df["lon"] = df["lon"].apply(_parse_number_loose)
+        if "lat" in df.columns:
+            df["lat"] = df["lat"].apply(_parse_number_loose)
+        if "lon" in df.columns:
+            df["lon"] = df["lon"].apply(_parse_number_loose)
         return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading projects: {e}"
@@ -223,7 +242,9 @@ def load_approved_projects():
 if st.sidebar.button("🔄 Check updates"):
     load_approved_projects.clear()
     load_country_centers.clear()
-    ensure_headers(); ensure_lat_lon_text_columns(); ensure_message_headers()
+    ensure_headers()
+    ensure_lat_lon_text_columns()
+    ensure_message_headers()
     st.session_state["_last_refresh"] = datetime.utcnow().isoformat()
     st.rerun()
 
@@ -240,46 +261,71 @@ def _clean_url(u):
     return s if (s.startswith("http://") or s.startswith("https://")) else s
 
 if not df_projects.empty:
-    if "lat" in df_projects.columns: df_projects["lat"] = df_projects["lat"].apply(_as_float)
-    if "lon" in df_projects.columns: df_projects["lon"] = df_projects["lon"].apply(_as_float)
+    if "lat" in df_projects.columns:
+        df_projects["lat"] = df_projects["lat"].apply(_as_float)
+    if "lon" in df_projects.columns:
+        df_projects["lon"] = df_projects["lon"].apply(_as_float)
     df_map = df_projects.dropna(subset=["lat", "lon"]).copy()
 
     if df_map.empty:
         st.info("No valid points to plot (missing lat/lon).")
     else:
-        groups = df_map.groupby(["country","lat","lon"], as_index=False)
-        m = folium.Map(location=[df_map["lat"].mean(), df_map["lon"].mean()], zoom_start=2, tiles="CartoDB dark_matter")
+        groups = df_map.groupby(["country", "lat", "lon"], as_index=False)
+
+        m = folium.Map(
+            location=[df_map["lat"].mean(), df_map["lon"].mean()],
+            zoom_start=2,
+            tiles="CartoDB dark_matter"
+        )
+
         for (country, lat, lon), g in groups:
             proj_dict = {}
             for _, r in g.iterrows():
-                pname = str(r.get("project_name","")).strip() or "(unnamed project)"
-                city = str(r.get("city","")).strip()
-                url  = _clean_url(r.get("url",""))
+                pname = str(r.get("project_name", "")).strip() or "(unnamed project)"
+                city = str(r.get("city", "")).strip()
+                url = _clean_url(r.get("url", ""))
                 if pname not in proj_dict:
                     proj_dict[pname] = {"cities": set(), "urls": set()}
-                if city: proj_dict[pname]["cities"].add(city)
-                if url:  proj_dict[pname]["urls"].add(url)
-            lines = ["<div style='font-size:0.9rem; color:#0f172a;'>", f"<b>{country}</b>", "<ul style='padding-left:1rem; margin:0;'>"]
+                if city:
+                    proj_dict[pname]["cities"].add(city)
+                if url:
+                    proj_dict[pname]["urls"].add(url)
+
+            lines = [
+                "<div style='font-size:0.9rem; color:#0f172a;'>",
+                f"<b>{country}</b>",
+                "<ul style='padding-left:1rem; margin:0;'>"
+            ]
             for pname, info in proj_dict.items():
                 cities_txt = ", ".join(sorted(info["cities"])) if info["cities"] else "—"
                 url_html = ""
                 if info["urls"]:
                     u_any = sorted(info["urls"])[0]
-                    url_html = " — " f"<a href='{u_any}' target='_blank' style='color:#2563eb; text-decoration:none;'>link</a>"
+                    url_html = (
+                        " — "
+                        f"<a href='{u_any}' target='_blank' "
+                        "style='color:#2563eb; text-decoration:none;'>link</a>"
+                    )
                 lines.append(f"<li><b>{pname}</b> — {cities_txt}{url_html}</li>")
             lines.append("</ul></div>")
             html_block = "".join(lines)
 
-            any_active = any(str(x).lower()=="active" for x in g["status"].tolist())
+            any_active = any(str(x).lower() == "active" for x in g["status"].tolist())
             color = "#38bdf8" if any_active else "#facc15"
 
             folium.CircleMarker(
-                location=[lat, lon], radius=6, color=color, fill=True, fill_opacity=0.9,
-                tooltip=folium.Tooltip(html_block, sticky=True, direction='top',
+                location=[lat, lon],
+                radius=6,
+                color=color,
+                fill=True,
+                fill_opacity=0.9,
+                tooltip=folium.Tooltip(
+                    html_block, sticky=True, direction='top',
                     style="background:#ffffff; color:#0f172a; border:1px solid #cbd5e1; border-radius:8px; padding:8px;"
                 ),
                 popup=folium.Popup(html_block, max_width=380),
             ).add_to(m)
+
         st_folium(m, height=520, width=None)
 else:
     st.info("No approved projects found.")
@@ -337,7 +383,7 @@ else:
         st.session_state["prefill_lon"]         = sel.get("lon", "")
 
         st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
-        st.experimental_rerun()
+        st.rerun()
 
 st.markdown("---")
 
@@ -432,7 +478,7 @@ with st.form("add_project_form", clear_on_submit=False):
                     to_remove_idx = i
         if to_remove_idx is not None:
             st.session_state.city_list.pop(to_remove_idx)
-            st.experimental_rerun()
+            st.rerun()
 
         if st.checkbox("Clear all cities"):
             st.session_state.city_list = []
@@ -447,6 +493,7 @@ with st.form("add_project_form", clear_on_submit=False):
     submitted  = st.form_submit_button("Submit for review")
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
+    """Append a row to the PROJECTS sheet (plain text for lat/lon)."""
     ws, err = _ws_projects()
     if err or ws is None:
         return False, err
@@ -454,8 +501,10 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
         ensure_headers(); ensure_lat_lon_text_columns()
 
         def _fmt_num_str(v):
-            try: return f"{float(v):.6f}"
-            except: return ""
+            try:
+                return f"{float(v):.6f}"
+            except Exception:
+                return ""
 
         row = {
             "country": payload.get("country", ""),
@@ -490,12 +539,9 @@ def _summarize_changes(before: dict, after: dict) -> str:
     for c in cols:
         bv = before.get(c, "")
         av = after.get(c, "")
-        if (pd.isna(bv) if isinstance(bv,float) else bv)==(pd.NA) if False else False:  # no-op guard
-            pass
-        # string compare robusta
-        if (str(bv) != str(av)):
-            bv_s = "" if (bv is None or (isinstance(bv,float) and pd.isna(bv))) else str(bv)
-            av_s = "" if (av is None or (isinstance(av,float) and pd.isna(av))) else str(av)
+        if str(bv) != str(av):
+            bv_s = "" if (bv is None or (isinstance(bv, float) and pd.isna(bv))) else str(bv)
+            av_s = "" if (av is None or (isinstance(av, float) and pd.isna(av))) else str(av)
             if len(bv_s) > 120: bv_s = bv_s[:117]+"…"
             if len(av_s) > 120: av_s = av_s[:117]+"…"
             changes.append(f"{c}: '{bv_s}' → '{av_s}'")
@@ -522,7 +568,8 @@ if submitted:
         before = st.session_state.get("_before_row", {}) if st.session_state.get("_edit_mode") else {}
 
         for pair in pairs:
-            if "—" not in pair: continue
+            if "—" not in pair:
+                continue
             country, city = [p.strip() for p in pair.split("—", 1)]
             lat, lon = (None, None)
             if country:
@@ -553,14 +600,17 @@ if submitted:
                 payload = {**after_payload, "is_edit": False, "edit_target": "", "edit_request": "New submission"}
 
             ok_sheet, msg_sheet = append_submission_to_sheet(payload)
-            ok_all &= ok_sheet; msg_any = msg_sheet; total_rows += 1
+            ok_all &= ok_sheet
+            msg_any = msg_sheet
+            total_rows += 1
             entries_preview.append(payload)
 
         if ok_all:
             st.success(f"✅ {'Edit queued' if st.session_state.get('_edit_mode') else 'Submission saved'} ({total_rows} row(s) added).")
             # limpa estado de edição e prefills
             for k in list(st.session_state.keys()):
-                if str(k).startswith("prefill_"): st.session_state[k] = ""
+                if str(k).startswith("prefill_"):
+                    st.session_state[k] = ""
             st.session_state["_edit_mode"] = False
             st.session_state["_before_row"] = {}
             st.session_state["city_list"] = []
@@ -641,7 +691,8 @@ def load_approved_messages():
         if df.empty:
             return pd.DataFrame(), True, None
         for c in MESSAGE_HEADERS:
-            if c not in df.columns: df[c] = ""
+            if c not in df.columns:
+                df[c] = ""
         df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
         return df.sort_values("created_at", ascending=False), True, None
     except Exception as e:
