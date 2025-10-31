@@ -615,20 +615,29 @@ with st.form("add_project_form", clear_on_submit=False):
             placeholder="e.g., Lagos, Ibadan"
         )
     with colc3:
-        st.write("")
-        add_one = st.form_submit_button(
-            "➕ Add to this country",
-            use_container_width=True,
-            disabled=not (options_for_city and selected_country_for_city != SELECT_PLACEHOLDER)
-        )
+    st.write("")
+    add_one = st.form_submit_button(
+        "➕ Add to this country",
+        use_container_width=True,
+        disabled=not options_for_city
+    )
 
-    # --- ADD ONE: adiciona e LIMPA via flag + rerun (não muta widget durante submit)
-    if add_one and selected_country_for_city != SELECT_PLACEHOLDER and city_to_add.strip():
-        cities = [c.strip() for c in city_to_add.split(",") if c.strip()]
+# --- Corrige leitura direta de session_state
+if add_one:
+    selected_country = st.session_state.get("country_for_city")
+    city_input = st.session_state.get("city_to_add", "").strip()
+
+    if not selected_country or selected_country == SELECT_PLACEHOLDER:
+        st.warning("Please select a valid country first.")
+    elif not city_input:
+        st.warning("Please type a city name.")
+    else:
+        cities = [c.strip() for c in city_input.split(",") if c.strip()]
         for c in cities:
-            _add_city_entry(selected_country_for_city, c)
+            _add_city_entry(selected_country, c)
         st.session_state["_reset_city_inputs"] = True
         st.rerun()
+
 
     add_all = st.form_submit_button(
         "➕ Add to ALL selected countries",
