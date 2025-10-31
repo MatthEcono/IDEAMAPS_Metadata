@@ -246,6 +246,16 @@ def load_approved_projects():
         return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading projects: {e}"
+        if st.sidebar.button("🔄 Check updates"):
+   
+    load_approved_projects.clear()
+    load_country_centers.clear()
+    ensure_headers()
+    ensure_lat_lon_text_columns()
+    ensure_message_headers()
+    st.session_state["_last_refresh"] = datetime.utcnow().isoformat()
+    st.rerun()
+
 
 df_projects, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets and debug_msg:
