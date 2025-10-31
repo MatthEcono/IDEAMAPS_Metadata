@@ -60,6 +60,9 @@ REQUIRED_HEADERS = [
 MESSAGES_SHEET_NAME = "Public Messages"
 MESSAGE_HEADERS = ["name","email","message","approved","created_at"]
 
+# Placeholder do select de país para cidades
+SELECT_PLACEHOLDER = "— Select a country —"
+
 @st.cache_resource(show_spinner=False)
 def _gs_client():
     try:
@@ -391,7 +394,7 @@ else:
 st.markdown("---")
 
 # =============================================================================
-# 5) BROWSE & LOAD FOR EDIT (NO INLINE EDIT)
+# 5) BROWSE & LOAD FOR EDIT / REQUEST DELETE
 # =============================================================================
 st.subheader("Browse existing entries")
 if df_projects.empty:
@@ -417,35 +420,123 @@ else:
 
     options = df_view["__key__"].tolist()
     selected_key = st.selectbox(
-        "Select a row to edit (loads into the submission form below)",
+        "Select a row to edit or delete (loads into the submission form below)",
         options=[""] + options,
         index=0
     )
 
-    if selected_key and st.button("✎ Edit this row"):
-        sel = df_view[df_view["__key__"] == selected_key].iloc[0].to_dict()
-        idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
+    col_a, col_b = st.columns([1, 1])
 
-        st.session_state["_edit_mode"]  = True
-        st.session_state["_before_row"] = df_projects.loc[idx_sel].to_dict()
+    # ----------------- EDIT -----------------
+    with col_a:
+        if selected_key and st.button("✎ Edit this row", use_container_width=True):
+            sel = df_view[df_view["__key__"] == selected_key].iloc[0].to_dict()
+            idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
 
-        st.session_state["prefill_project_name"] = str(sel.get("project_name",""))
-        st.session_state["countries_sel"] = [str(sel.get("country",""))] if sel.get("country","") else []
-        st.session_state["city_list"] = []
-        if sel.get("country","") and str(sel.get("city","")).strip():
-            st.session_state["city_list"] = [f"{sel['country']} — {sel['city']}"]
+            st.session_state["_edit_mode"]  = True
+            st.session_state["_before_row"] = df_projects.loc[idx_sel].to_dict()
 
-        st.session_state["prefill_years"]       = str(sel.get("years",""))
-        st.session_state["prefill_data_types"]  = str(sel.get("data_types",""))
-        st.session_state["prefill_description"] = str(df_projects.loc[idx_sel].get("description",""))
-        st.session_state["prefill_contact"]     = str(sel.get("contact",""))
-        st.session_state["prefill_access"]      = str(sel.get("access",""))
-        st.session_state["prefill_url"]         = str(sel.get("url",""))
-        st.session_state["prefill_lat"]         = sel.get("lat", "")
-        st.session_state["prefill_lon"]         = sel.get("lon", "")
+            st.session_state["prefill_project_name"] = str(sel.get("project_name",""))
+            st.session_state["countries_sel"] = [str(sel.get("country",""))] if sel.get("country","") else []
+            st.session_state["city_list"] = []
+            if sel.get("country","") and str(sel.get("city","")).strip():
+                st.session_state["city_list"] = [f"{sel['country']} — {sel['city']}"]
 
-        st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
-        st.rerun()
+            st.session_state["prefill_years"]       = str(sel.get("years",""))
+            st.session_state["prefill_data_types"]  = str(sel.get("data_types",""))
+            st.session_state["prefill_description"] = str(df_projects.loc[idx_sel].get("description",""))
+            st.session_state["prefill_contact"]     = str(sel.get("contact",""))
+            st.session_state["prefill_access"]      = str(sel.get("access",""))
+            st.session_state["prefill_url"]         = str(sel.get("url",""))
+            st.session_state["prefill_lat"]         = sel.get("lat", "")
+            st.session_state["prefill_lon"]         = sel.get("lon", "")
+
+            st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
+            st.rerun()
+
+    # ----------------- REQUEST DELETE -----------------
+    with col_b:
+        if selected_key and st.button("🗑 Request deletion", use_container_width=True, type="secondary"):
+            st.session_state["_delete_target"] = selected_key
+
+    if st.session_state.get("_delete_target"):
+        st.markdown("### 🗑 Request deletion")
+        st.warning(f"You are requesting deletion of: `{st.session_state['_delete_target']}`")
+
+        # Recupera linha completa (df_projects) do alvo
+        target_sel = df_view[df_view["__key__"] == st.session_state["_delete_target"]]
+        if target_sel.empty:
+            st.error("Selected row not found anymore. Please refresh.")
+        else:
+            idx_sel = target_sel.index[0]
+            full_row = df_projects.loc[idx_sel].to_dict()
+
+            del_reason = st.text_area(
+                "Please describe the reason for deletion",
+                placeholder="Explain why this entry should be removed."
+            )
+            del_email = st.text_input(
+                "Your email (required for follow-up)",
+                key="del_email",
+                placeholder="name@org.org"
+            )
+
+            c1, c2 = st.columns([1, 4])
+            with c1:
+                confirm = st.button("Confirm deletion request", type="primary")
+            with c2:
+                cancel  = st.button("Cancel")
+
+            if cancel:
+                st.session_state.pop("_delete_target", None)
+                st.rerun()
+
+            if confirm:
+                if not del_email.strip():
+                    st.error("Please provide your email.")
+                elif not del_reason.strip():
+                    st.error("Please provide a reason for deletion.")
+                else:
+                    payload = {
+                        "country": str(full_row.get("country","")),
+                        "city": str(full_row.get("city","")),
+                        "lat": full_row.get("lat",""),
+                        "lon": full_row.get("lon",""),
+                        "project_name": str(full_row.get("project_name","")),
+                        "years": str(full_row.get("years","")),
+                        "status": str(full_row.get("status","")),
+                        "data_types": str(full_row.get("data_types","")),
+                        "description": str(full_row.get("description","")),
+                        "contact": str(full_row.get("contact","")),
+                        "access": str(full_row.get("access","")),
+                        "url": str(full_row.get("url","")),
+                        "submitter_email": del_email.strip(),
+                        "is_edit": True,
+                        "edit_target": str(full_row.get("project_name","")),
+                        "edit_request": f"Request deletion — {del_reason.strip()}",
+                    }
+
+                    ok_sheet, msg_sheet = append_submission_to_sheet(payload)
+                    if ok_sheet:
+                        # Notificação opcional
+                        try_send_email_via_emailjs({
+                            "project_name": payload["project_name"],
+                            "entries": f"{payload['country']} — {payload['city']}",
+                            "status": "",
+                            "years": payload["years"],
+                            "url": payload["url"],
+                            "submitter_email": payload["submitter_email"],
+                            "is_edit": "yes",
+                            "edit_target": payload["edit_target"],
+                            "edit_request": payload["edit_request"],
+                        })
+                        st.success("✅ Deletion request submitted for review.")
+                        st.session_state.pop("_delete_target", None)
+                        # atualiza tabela
+                        load_approved_projects.clear()
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ Failed to record deletion request: {msg_sheet}")
 
 st.markdown("---")
 
@@ -508,8 +599,8 @@ with st.form("add_project_form", clear_on_submit=False):
 
     colc1, colc2, colc3 = st.columns([2, 2, 1])
     with colc1:
-        # Evita index=None quando não houver países selecionados
-        _opts = options_for_city if options_for_city else ["—"]
+        # Sempre com placeholder na posição 0
+        _opts = [SELECT_PLACEHOLDER] + (options_for_city if options_for_city else [])
         selected_country_for_city = st.selectbox(
             "Select implementation country for the city",
             options=_opts,
@@ -518,13 +609,21 @@ with st.form("add_project_form", clear_on_submit=False):
             key="country_for_city",
         )
     with colc2:
-        city_to_add = st.text_input("City (accepts multiple, separated by commas)", key="city_to_add")
+        city_to_add = st.text_input(
+            "City (accepts multiple, separated by commas)",
+            key="city_to_add",
+            placeholder="e.g., Lagos, Ibadan"
+        )
     with colc3:
         st.write("")
-        add_one = st.form_submit_button("➕ Add to this country", use_container_width=True, disabled=not bool(options_for_city))
+        add_one = st.form_submit_button(
+            "➕ Add to this country",
+            use_container_width=True,
+            disabled=not (options_for_city and selected_country_for_city != SELECT_PLACEHOLDER)
+        )
 
     # --- ADD ONE: adiciona e LIMPA via flag + rerun (não muta widget durante submit)
-    if add_one and options_for_city and selected_country_for_city and selected_country_for_city != "—" and city_to_add.strip():
+    if add_one and selected_country_for_city != SELECT_PLACEHOLDER and city_to_add.strip():
         cities = [c.strip() for c in city_to_add.split(",") if c.strip()]
         for c in cities:
             _add_city_entry(selected_country_for_city, c)
@@ -679,7 +778,6 @@ if submitted:
 
         if ok_all:
             st.success(f"✅ {'Edit queued' if st.session_state.get('_edit_mode') else 'Submission saved'} ({total_rows} row(s) added).")
-            # limpa prefill e modo de edição
             for k in list(st.session_state.keys()):
                 if str(k).startswith("prefill_"):
                     st.session_state[k] = ""
