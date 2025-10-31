@@ -61,6 +61,34 @@ st.set_page_config(
     layout="wide",
     page_icon="🌍",
 )
+with st.expander("🔧 Debug: Google Sheets connection", expanded=False):
+    st.write("Spreadsheet ID:", st.secrets.get("SHEETS_SPREADSHEET_ID", "")[:12] + "…")
+    st.write("Worksheet name:", st.secrets.get("SHEETS_WORKSHEET_NAME", ""))
+    if st.button("Force refresh connection (clear cache)"):
+        st.cache_resource.clear()
+        st.success("Cache limpo. Clique em 'Rerun' no menu do app.")
+    try:
+        ws = get_ws()
+        st.write("Worksheet OK. Linhas atuais:", ws.row_count)
+        all_values = ws.get_all_values()
+        if all_values:
+            st.write("Cabeçalho:", all_values[0])
+            st.write("Últimas linhas:", all_values[-3:])
+        else:
+            st.info("Planilha ainda está vazia.")
+    except Exception as e:
+        st.error(f"Falha ao conectar/ler: {e}")
+    if st.button("Append TEST row now"):
+        try:
+            append_submission_to_sheet({
+                "country":"TEST","city":"Ping","lat":0.0,"lon":0.0,
+                "project_name":"Connectivity Check","years":"0000–0000",
+                "status":"Planning","data_types":"None","description":"Debug row",
+                "contact":"System","access":"N/A","url":"","submitted_by":"debug",
+            })
+            st.success("Linha de teste enviada. Verifique a planilha.")
+        except Exception as e:
+            st.error(f"Não consegui escrever: {e}")
 
 # =========================
 # HEADER
