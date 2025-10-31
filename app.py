@@ -1,26 +1,28 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from datetime import datetime
+from io import StringIO
 
-# ========= (Extras p/ integrações; tudo opcional e à prova de falhas) =========
+# Extras (integrações opcionais e resilientes)
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
 
-# -----------------------------------------------------------------------------
-# 0) Configs de página
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 0) Configs básicos da página
+# =============================================================================
 st.set_page_config(
     page_title="IDEAMAPS Global Metadata Explorer",
     layout="wide",
     page_icon="🌍",
 )
 
-# -----------------------------------------------------------------------------
-# 1) Dados base (fallback local)  — usados se Sheets não estiver disponível
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 1) Dados base (fallback local) — usados se Sheets não estiver disponível
+# =============================================================================
 FALLBACK_DATA = [
     {
         "country": "Nigeria",
@@ -70,12 +72,80 @@ FALLBACK_DATA = [
 ]
 FALLBACK_DF = pd.DataFrame(FALLBACK_DATA)
 
-# -----------------------------------------------------------------------------
-# 2) Conectores resilientes (Google Sheets + EmailJS)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 2) Países → (lat, lon): URL (secrets) → CSV local → fallback interno
+#     CSV esperado (nomes flexíveis): 
+#     Country, Latitude (average), Longitude (average)
+# =============================================================================
+FALLBACK_COUNTRY_CENTER = {
+    "Nigeria": (9.0820, 8.6753),
+    "Bangladesh": (23.6850, 90.3563),
+    "Kenya": (-0.0236, 37.9062),
+    "Brazil": (-14.2350, -51.9253),
+    "United Kingdom": (54.0, -2.0),
+}
+
+@st.cache_data(show_spinner=False)
+def load_country_centers() -> dict[str, tuple[float, float]]:
+    """
+    Tenta na ordem:
+      1) URL em st.secrets["COUNTRIES_CSV_URL"] (CSV com cols Country, Latitude..., Longitude...)
+      2) Arquivo local data/countries_latlon.csv
+      3) FALLBACK_COUNTRY_CENTER
+    Retorna dict: {Country: (lat, lon)}
+    """
+    def _norm(df: pd.DataFrame) -> dict[str, tuple[float, float]]:
+        cols = {c.strip().lower(): c for c in df.columns}
+        c_country = next((cols[k] for k in cols if k in {"country", "name"}), None)
+        c_lat = next((cols[k] for k in cols if "lat" in k), None)
+        c_lon = next((cols[k] for k in cols if "lon" in k or "lng" in k), None)
+        if not (c_country and c_lat and c_lon):
+            return {}
+        tmp = df[[c_country, c_lat, c_lon]].copy()
+        tmp.columns = ["country", "lat", "lon"]
+        tmp["country"] = tmp["country"].astype(str).str.strip()
+        tmp["lat"] = pd.to_numeric(tmp["lat"], errors="coerce")
+        tmp["lon"] = pd.to_numeric(tmp["lon"], errors="coerce")
+        tmp = tmp.dropna(subset=["lat", "lon"])
+        out = {}
+        for _, r in tmp.iterrows():
+            if r["country"]:
+                out[r["country"]] = (float(r["lat"]), float(r["lon"]))
+        return out
+
+    # 1) URL nas secrets
+    url = st.secrets.get("COUNTRIES_CSV_URL")
+    if url:
+        try:
+            r = requests.get(url, timeout=12)
+            if r.ok:
+                df_url = pd.read_csv(StringIO(r.text))
+                d = _norm(df_url)
+                if d:
+                    return d
+        except Exception:
+            pass
+
+    # 2) Arquivo local
+    try:
+        df_local = pd.read_csv("data/countries_latlon.csv")
+        d = _norm(df_local)
+        if d:
+            return d
+    except Exception:
+        pass
+
+    # 3) fallback
+    return FALLBACK_COUNTRY_CENTER
+
+COUNTRY_CENTER = load_country_centers()
+
+# =============================================================================
+# 3) Conector Google Sheets + EmailJS (resiliente)
+# =============================================================================
 @st.cache_resource(show_spinner=False)
 def _gs_worksheet():
-    """Tenta abrir worksheet do Google Sheets. Retorna (ws, msg_erro)"""
+    """Abre worksheet (aba) do Google Sheets definido nas secrets."""
     try:
         ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
         ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")
@@ -100,9 +170,8 @@ def _gs_worksheet():
 @st.cache_data(show_spinner=False)
 def load_approved_projects():
     """
-    Carrega projetos APROVADOS do Sheets (approved == TRUE).
-    Se não conseguir, usa FALLBACK_DF.
-    Retorna (df, from_sheets: bool, debug_msg: str|None)
+    Lê a planilha e retorna apenas approved == TRUE.
+    (df, from_sheets: bool, debug_msg: str|None)
     """
     ws, err = _gs_worksheet()
     if err or ws is None:
@@ -112,46 +181,35 @@ def load_approved_projects():
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
 
-        if df.empty:
-            return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
-
-        # Garante colunas básicas
-        needed = [
-            "country", "city", "lat", "lon", "project_name", "years", "status",
-            "data_types", "description", "contact", "access", "url", "approved"
-        ]
-        for col in needed:
+        # garantir colunas
+        for col in ["country", "city", "lat", "lon", "project_name", "years", "status",
+                    "data_types", "description", "contact", "access", "url", "approved"]:
             if col not in df.columns:
                 df[col] = ""
 
-        # >>> Conversão segura para numérico (NAN em casos inválidos)
+        # filtrar aprovados
+        df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
+
+        # coerção lat/lon
         for c in ("lat", "lon"):
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # Filtra apenas aprovados
-        df = df[df["approved"].astype(str).str.upper().eq("TRUE")]
-
-        # Se após o filtro ficou vazio, evita quebrar o app
+        # se vazio, usa fallback
         if df.empty:
-            return FALLBACK_DF.copy(), False, "Nenhum registro aprovado no Sheets; usando fallback local."
+            return FALLBACK_DF.copy(), False, "Planilha sem aprovados; usando fallback local."
 
         return df, True, None
-
     except Exception as e:
         return FALLBACK_DF.copy(), False, f"Erro lendo a planilha: {e}"
 
-
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
-    """
-    Tenta anexar uma linha na aba 'submissions'.
-    Retorna (ok, msg).
-    """
+    """Anexa submissão na aba configurada (fila de aprovação)."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err or "Worksheet indisponível."
 
     try:
-        # garante todas as chaves/ordem
         row = {
             "country": payload.get("country", ""),
             "city": payload.get("city", ""),
@@ -168,7 +226,6 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
-        # se a planilha tiver cabeçalhos, append_row com ordem definida
         header = ws.row_values(1)
         values = [row.get(col, "") for col in header] if header else list(row.values())
         ws.append_row(values)
@@ -177,49 +234,35 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
         return False, f"Não consegui escrever no Sheets: {e}"
 
 def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
-    """
-    Envia e-mail via EmailJS usando secrets. Suporta chave privada e domínio permitido.
-    """
+    """Envia e-mail via EmailJS (opcional)."""
     svc = st.secrets.get("EMAILJS_SERVICE_ID")
     tpl = st.secrets.get("EMAILJS_TEMPLATE_ID")
-    pub = st.secrets.get("EMAILJS_PUBLIC_KEY")
-    prv = st.secrets.get("EMAILJS_PRIVATE_KEY")  # opcional
-    origin = st.secrets.get("EMAILJS_ALLOWED_ORIGIN")  # opcional
+    key = st.secrets.get("EMAILJS_PUBLIC_KEY")
 
-    if not (svc and tpl and pub):
+    if not (svc and tpl and key):
         return False, "EmailJS não configurado nas secrets; pulando envio."
-
-    payload = {
-        "service_id": svc,
-        "template_id": tpl,
-        "user_id": pub,
-        "template_params": template_params,
-    }
-    # Se estiver usando “Use Private Key”, envie o accessToken
-    if prv:
-        payload["accessToken"] = prv
-
-    headers = {}
-    if origin:
-        headers["Origin"] = origin
 
     try:
         resp = requests.post(
             "https://api.emailjs.com/api/v1.0/email/send",
-            json=payload,
-            headers=headers,
+            json={
+                "service_id": svc,
+                "template_id": tpl,
+                "user_id": key,
+                "template_params": template_params,
+            },
             timeout=12,
         )
         if resp.status_code == 200:
             return True, "Email enviado com sucesso."
-        return False, f"EmailJS retornou status {resp.status_code}: {resp.text[:200]}"
+        else:
+            return False, f"EmailJS retornou status {resp.status_code}."
     except Exception as e:
         return False, f"Falha no envio de e-mail: {e}"
 
-
-# -----------------------------------------------------------------------------
-# 3) UI — Header
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 4) Header
+# =============================================================================
 st.markdown(
     """
     <div style="
@@ -241,18 +284,23 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# -----------------------------------------------------------------------------
-# 4) Carrega dados (Sheets se disponível; senão fallback)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 5) Carrega dados (Sheets se disponível; senão fallback)
+# =============================================================================
 df_all, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets:
     st.info("ℹ️ Usando dados locais temporários (o Google Sheets não está disponível).")
     if debug_msg:
         st.caption(f"Debug: {debug_msg}")
 
-# -----------------------------------------------------------------------------
-# 5) Sidebar — filtros
-# -----------------------------------------------------------------------------
+# segurança extra: coerção lat/lon
+for c in ("lat", "lon"):
+    if c in df_all.columns:
+        df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
+
+# =============================================================================
+# 6) Sidebar — Filtros
+# =============================================================================
 st.sidebar.markdown(
     """
     <div style="font-weight:600; font-size:1rem; color:#fff;">
@@ -270,18 +318,28 @@ all_countries = ["All"] + sorted(df_all["country"].dropna().unique().tolist())
 selected_country = st.sidebar.selectbox("Filter by country", all_countries)
 df = df_all.copy() if selected_country == "All" else df_all[df_all["country"] == selected_country].copy()
 
-# -----------------------------------------------------------------------------
-# 6) Mapa (dark) + popups com links
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 7) Mapa (dark) + Popups com links
+# =============================================================================
+# Define centro do mapa (se usuário filtrou por país e temos centro conhecido)
+if selected_country != "All" and selected_country in COUNTRY_CENTER:
+    map_center = COUNTRY_CENTER[selected_country]
+else:
+    map_center = (15, 0)
+
+m = folium.Map(location=map_center, zoom_start=2 if selected_country == "All" else 4, tiles="CartoDB dark_matter")
+
+# Agrupar por (country, city) para não duplicar marcadores
 grouped = (
     df.groupby(["country", "city", "lat", "lon"], as_index=False)
-    .agg({"project_name": list})
+      .agg({"project_name": list})
 )
-
-m = folium.Map(location=[15, 0], zoom_start=2, tiles="CartoDB dark_matter")
 
 for _, row in grouped.iterrows():
     country, city, lat, lon = row["country"], row["city"], row["lat"], row["lon"]
+    if pd.isna(lat) or pd.isna(lon):
+        continue
+
     project_list = df_all[(df_all["country"] == country) & (df_all["city"] == city)][
         ["project_name", "years", "status", "url"]
     ].to_dict(orient="records")
@@ -319,12 +377,12 @@ for _, row in grouped.iterrows():
         tooltip=tooltip_text,
     ).add_to(m)
 
-st_folium(m, height=500, width=None)
+st_folium(m, height=520, width=None)
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# 7) Cards de projetos
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 8) Cards de projetos
+# =============================================================================
 st.markdown(
     "<h3 style='color:#fff; margin-bottom:0.5rem;'>Projects</h3>"
     "<p style='color:#94a3b8; font-size:0.8rem; margin-top:0;'>Resumo dos projetos conhecidos no país selecionado.</p>",
@@ -368,17 +426,35 @@ for _, row in df.iterrows():
 
 st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# 8) Formulário — Submissão controlada (com fallback)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# 9) Formulário — submissão para fila de aprovação (com auto lat/lon)
+# =============================================================================
 st.header("Add new project (goes to review queue)")
 
+# opções: países vindos do CSV + países já existentes no dataset
+form_country_options = sorted(set(list(COUNTRY_CENTER.keys()) + df_all["country"].dropna().tolist()))
+
+def _on_country_change():
+    c = st.session_state.form_country
+    if c in COUNTRY_CENTER:
+        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[c]
+
+# estado inicial
+if "form_country" not in st.session_state:
+    st.session_state.form_country = form_country_options[0] if form_country_options else ""
+if "lat_input" not in st.session_state:
+    st.session_state.lat_input, st.session_state.lon_input = (0.0, 0.0)
+
 with st.form("add_project_form"):
-    new_country = st.text_input("Country")
-    new_city = st.text_input("City")
-    new_lat = st.number_input("Latitude", value=0.0, format="%.6f")
-    new_lon = st.number_input("Longitude", value=0.0, format="%.6f")
-    new_name = st.text_input("Project name")
+    new_country = st.selectbox("Country", form_country_options, key="form_country", on_change=_on_country_change)
+    col1, col2 = st.columns(2)
+    with col1:
+        new_city = st.text_input("City")
+        new_lat = st.number_input("Latitude", value=st.session_state.lat_input, format="%.6f", key="lat_input")
+    with col2:
+        new_name = st.text_input("Project name")
+        new_lon = st.number_input("Longitude", value=st.session_state.lon_input, format="%.6f", key="lon_input")
+
     new_years = st.text_input("Years (e.g. 2022–2024)")
     new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
     new_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
@@ -389,7 +465,6 @@ with st.form("add_project_form"):
 
     submitted = st.form_submit_button("Submit for review")
 
-# Quando envia
 if submitted:
     new_row = {
         "country": new_country,
@@ -406,20 +481,17 @@ if submitted:
         "url": new_url,
     }
 
-    # 8.1) tenta escrever no Sheets (fila de aprovação)
     ok_sheet, msg_sheet = append_submission_to_sheet(new_row)
     if ok_sheet:
         st.success("✅ Submission saved to review queue (Google Sheets).")
     else:
         st.warning(f"⚠️ Submission NOT saved to Sheets. {msg_sheet}")
 
-    # 8.2) tenta enviar e-mail (opcional)
     ok_mail, msg_mail = try_send_email_via_emailjs(new_row)
     if ok_mail:
         st.info("📨 Notification email sent.")
     else:
         st.caption(msg_mail)
 
-    # 8.3) sempre mostra o bloco p/ referência
     st.markdown("**Submission payload (for your records):**")
     st.code(new_row, language="python")
