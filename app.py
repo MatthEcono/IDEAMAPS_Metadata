@@ -5,10 +5,11 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 
-# ========= Integrações opcionais (aprovações e e-mail) =========
+# Integrações opcionais (Sheets + Email)
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
+from io import StringIO
 
 # -----------------------------------------------------------------------------
 # 0) Configs de página
@@ -18,6 +19,35 @@ st.set_page_config(
     layout="wide",
     page_icon="🌍",
 )
+
+# Barra superior: título + refresh
+colA, colB = st.columns([1, 0.25])
+with colA:
+    st.markdown(
+        """
+        <div style="
+            background: linear-gradient(90deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            padding: 1.0rem 1.2rem;
+            border-radius: 0.75rem;
+            border: 1px solid #334155;
+            margin-bottom: 0.5rem;
+        ">
+            <div style="color:#fff; font-size:1.1rem; font-weight:600;">
+                IDEAMAPS Global Metadata Explorer 🌍
+            </div>
+            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.3;">
+                Catálogo vivo de projetos e datasets (spatial / quantitative / qualitative)
+                produzidos pela rede IDEAMAPS e parceiros.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+with colB:
+    if st.button("🔄 Refresh data (clear cache)", use_container_width=True):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.success("Cache limpo. Dados serão recarregados agora.")
 
 # -----------------------------------------------------------------------------
 # 1) Fallback local (mostra algo mesmo sem Sheets)
@@ -73,10 +103,8 @@ FALLBACK_DF = pd.DataFrame(FALLBACK_DATA)
 
 # -----------------------------------------------------------------------------
 # 2) Country → (lat, lon) para auto-preencher o formulário
-#    (adicione/edite aqui os países que quer oferecer na lista)
 # -----------------------------------------------------------------------------
 COUNTRY_CENTER = {
-    # África / Ásia (exemplos)
     "Nigeria": (9.0820, 8.6753),
     "Bangladesh": (23.6850, 90.3563),
     "Kenya": (-0.0236, 37.9062),
@@ -85,8 +113,6 @@ COUNTRY_CENTER = {
     "India": (22.9734, 78.6569),
     "Pakistan": (30.3753, 69.3451),
     "Nepal": (28.3949, 84.1240),
-
-    # Américas / Europa (úteis pra você)
     "Brazil": (-14.2350, -51.9253),
     "United Kingdom": (54.0, -2.0),
     "Spain": (40.4637, -3.7492),
@@ -94,14 +120,14 @@ COUNTRY_CENTER = {
 }
 
 # -----------------------------------------------------------------------------
-# 3) Conectores resilientes (Google Sheets + EmailJS)
+# 3) Conectores (Sheets + EmailJS) com cache
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _gs_worksheet():
     """Tenta abrir worksheet do Google Sheets. Retorna (ws, msg_erro)"""
     try:
         ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
-        ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")
+        ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")  # ex.: "submissions"
         if not ss_id or not ws_name:
             return None, "Secrets ausentes: defina SHEETS_SPREADSHEET_ID e SHEETS_WORKSHEET_NAME."
 
@@ -120,11 +146,11 @@ def _gs_worksheet():
     except Exception as e:
         return None, f"Falha ao conectar no Google Sheets: {e}"
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=60)
 def load_approved_projects():
     """
     Lê aprovados (approved==TRUE) do Sheets.
-    Se falhar, retorna FALLBACK_DF e um flag from_sheets=False.
+    Se falhar, retorna FALLBACK_DF e flag from_sheets=False.
     """
     ws, err = _gs_worksheet()
     if err or ws is None:
@@ -136,17 +162,17 @@ def load_approved_projects():
         if df.empty:
             return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
 
-        # Normaliza colunas esperadas
+        # Normaliza esperadas
         needed = ["country", "city", "lat", "lon", "project_name", "years", "status",
                   "data_types", "description", "contact", "access", "url", "approved"]
         for col in needed:
             if col not in df.columns:
                 df[col] = ""
 
-        # Filtra apenas aprovados
+        # Filtra aprovados
         df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
 
-        # Converte lat/lon pra numérico (pode vir com vírgula/ponto misturados)
+        # Converte lat/lon
         for c in ("lat", "lon"):
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -155,13 +181,12 @@ def load_approved_projects():
         return FALLBACK_DF.copy(), False, f"Erro lendo a planilha: {e}"
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
-    """Anexa submissão na aba 'submissions' (fila de aprovação)."""
+    """Anexa submissão na aba definida em SHEETS_WORKSHEET_NAME (fila de aprovação)."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err or "Worksheet indisponível."
 
     try:
-        # Monta linha completa com carimbo de data
         row = {
             "country": payload.get("country", ""),
             "city": payload.get("city", ""),
@@ -178,7 +203,6 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
-
         header = ws.row_values(1)
         values = [row.get(col, "") for col in header] if header else list(row.values())
         ws.append_row(values)
@@ -213,31 +237,7 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Falha no envio de e-mail: {e}"
 
 # -----------------------------------------------------------------------------
-# 4) Header
-# -----------------------------------------------------------------------------
-st.markdown(
-    """
-    <div style="
-        background: linear-gradient(90deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
-        padding: 1.2rem 1.5rem;
-        border-radius: 0.75rem;
-        border: 1px solid #334155;
-        margin-bottom: 1rem;
-    ">
-        <div style="color:#fff; font-size:1.2rem; font-weight:600;">
-            IDEAMAPS Global Metadata Explorer 🌍
-        </div>
-        <div style="color:#94a3b8; font-size:0.85rem; line-height:1.3;">
-            Catálogo vivo de projetos e datasets (spatial / quantitative / qualitative)
-            produzidos pela rede IDEAMAPS e parceiros.
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# -----------------------------------------------------------------------------
-# 5) Carrega dados aprovados + concatena com fallback
+# 4) Carrega dados aprovados + concatena com fallback
 # -----------------------------------------------------------------------------
 df_sheets, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets:
@@ -245,17 +245,15 @@ if not from_sheets:
     if debug_msg:
         st.caption(f"Debug: {debug_msg}")
 
-# Junta fallback + aprovados do Sheets e remove duplicatas (mesma cidade + projeto)
 df_all = pd.concat([FALLBACK_DF, df_sheets], ignore_index=True)
 df_all = df_all.drop_duplicates(subset=["city", "project_name"], keep="first")
 
-# Normaliza lat/lon para todo o dataset
 for c in ("lat", "lon"):
     if c in df_all.columns:
         df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
 
 # -----------------------------------------------------------------------------
-# 6) Sidebar — filtros
+# 5) Sidebar — filtros
 # -----------------------------------------------------------------------------
 st.sidebar.markdown(
     """
@@ -269,18 +267,15 @@ st.sidebar.markdown(
     """,
     unsafe_allow_html=True
 )
-
 all_countries = ["All"] + sorted(df_all["country"].dropna().unique().tolist())
 selected_country = st.sidebar.selectbox("Filter by country", all_countries)
-
 df = df_all if selected_country == "All" else df_all[df_all["country"] == selected_country].copy()
 
 # -----------------------------------------------------------------------------
-# 7) Mapa (filtra só linhas com lat/lon válidos)
+# 6) Mapa (apenas linhas com lat/lon válidos)
 # -----------------------------------------------------------------------------
 df_map = df.dropna(subset=["lat", "lon"]).copy()
 
-# Centro inteligente: média dos pontos visíveis ou fallback global
 if not df_map.empty:
     lat0, lon0 = df_map["lat"].mean(), df_map["lon"].mean()
 else:
@@ -336,6 +331,40 @@ st_folium(m, height=500, width=None)
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
+# 7) Tabela dos pontos visíveis + Download CSV/HTML
+# -----------------------------------------------------------------------------
+st.markdown("### Projects on the map (current filter)")
+if df_map.empty:
+    st.caption("Nenhum ponto com latitude/longitude válidos para o filtro atual.")
+else:
+    # organiza colunas amigáveis
+    cols = ["country", "city", "lat", "lon", "project_name", "years", "status", "data_types", "description", "contact", "access", "url"]
+    cols = [c for c in cols if c in df_map.columns]
+    df_map_view = df_map[cols].sort_values(["country", "city", "project_name"], na_position="last")
+    st.dataframe(df_map_view, use_container_width=True, hide_index=True)
+
+    # CSV
+    csv_buf = StringIO()
+    df_map_view.to_csv(csv_buf, index=False)
+    st.download_button(
+        "⬇️ Download CSV",
+        data=csv_buf.getvalue().encode("utf-8"),
+        file_name="ideamaps_projects_on_map.csv",
+        mime="text/csv",
+    )
+
+    # HTML (tabela)
+    html_table = df_map_view.to_html(index=False, escape=False)
+    st.download_button(
+        "⬇️ Download HTML",
+        data=html_table.encode("utf-8"),
+        file_name="ideamaps_projects_on_map.html",
+        mime="text/html",
+    )
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
 # 8) Lista (cards)
 # -----------------------------------------------------------------------------
 st.markdown(
@@ -382,11 +411,11 @@ for _, row in df.iterrows():
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 9) Formulário — país com auto-preenchimento de lat/lon (sem callback dentro do form)
+# 9) Formulário — país com auto-preenchimento de lat/lon (callback fora do form)
 # -----------------------------------------------------------------------------
 st.header("Add new project (goes to review queue)")
 
-# inicializa session_state
+# session_state
 if "form_country" not in st.session_state:
     st.session_state.form_country = ""
 if "lat_input" not in st.session_state:
@@ -395,29 +424,21 @@ if "lon_input" not in st.session_state:
     st.session_state.lon_input = 0.0
 
 def _apply_country_center(country: str):
-    """Atualiza lat/lon no session_state com base no país escolhido (se houver centro conhecido)."""
     if country in COUNTRY_CENTER:
-        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[ country ]
+        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[country]
 
-# opções de país: catálogo fixo + já existentes no dataset
 form_country_options = sorted(set(list(COUNTRY_CENTER.keys()) + df_all["country"].dropna().tolist()))
 
-# --- IMPORTANTE: selectbox FORA do st.form (callback permitido aqui) ---
 st.subheader("Select country")
 st.caption("Ao escolher o país, latitude/longitude serão preenchidos automaticamente (você pode editar depois).")
 st.session_state.form_country = st.selectbox(
-    "Country",
+    "Country (for auto lat/lon)",
     options=[""] + form_country_options,
     index=([""] + form_country_options).index(st.session_state.form_country) if st.session_state.form_country in ([""] + form_country_options) else 0,
     key="country_selector_outside_form",
     on_change=lambda: _apply_country_center(st.session_state.country_selector_outside_form),
 )
 
-# garante que form_country reflita a escolha atual
-if st.session_state.country_selector_outside_form != st.session_state.form_country:
-    st.session_state.form_country = st.session_state.country_selector_outside_form
-
-# --- Agora o FORM em si (sem callbacks) ---
 with st.form("add_project_form"):
     col1, col2 = st.columns(2)
     with col1:
@@ -437,7 +458,6 @@ with st.form("add_project_form"):
 
     submitted = st.form_submit_button("Submit for review")
 
-# processamento da submissão
 if submitted:
     new_row = {
         "country": st.session_state.form_country,
@@ -468,4 +488,3 @@ if submitted:
 
     st.markdown("**Submission payload (for your records):**")
     st.code(new_row, language="python")
-
