@@ -5,6 +5,7 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime
 import re
+from pathlib import Path
 
 # ===== Integrações opcionais =====
 import requests
@@ -30,7 +31,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# 1) Fallback local
+# 1) Fallback local (projetos)
 # -----------------------------------------------------------------------------
 FALLBACK_DATA = [
     {
@@ -198,64 +199,101 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Erro no envio de e-mail: {e}"
 
 # -----------------------------------------------------------------------------
-# 3b) Países do Gist (lista completa) — cacheado com fallback
+# 3b) Lista completa de países (arquivo local + fallback para gist)
 # -----------------------------------------------------------------------------
+COUNTRY_CSV_LOCAL = Path(__file__).parent / "country-coord.csv"
 GIST_COUNTRIES_RAW = (
     "https://gist.githubusercontent.com/metal3d/"
     "5b925077e66194551df949de64e910f6/raw/country-coord.csv"
 )
 
+def _try_read_countries_csv(src, sep=None, encoding="utf-8"):
+    """Tenta ler o CSV com diferentes separadores e encodings."""
+    if sep is not None:
+        return pd.read_csv(src, sep=sep, engine="python", on_bad_lines="skip", encoding=encoding)
+    for _sep in [",", ";", r"\s{2,}"]:
+        try:
+            return pd.read_csv(src, sep=_sep, engine="python", on_bad_lines="skip", encoding=encoding)
+        except Exception:
+            continue
+    return pd.read_csv(src, engine="python", on_bad_lines="skip", encoding=encoding)
+
+def _pick_col(cols_lower, options):
+    """Retorna o nome da primeira coluna presente em cols_lower dentre options."""
+    for opt in options:
+        if opt in cols_lower:
+            return opt
+    return None
+
+def _num_locale_safe(x):
+    """Parser numérico tolerante (ponto/vírgula; remove separador de milhar)."""
+    if pd.isna(x):
+        return None
+    t = str(x).strip()
+    if not t:
+        return None
+    if ("," not in t) and ("." not in t):
+        digits = re.sub(r"[^\d\-\+]", "", t)
+        return float(digits) if digits else None
+    last_comma, last_dot = t.rfind(","), t.rfind(".")
+    last_sep = max(last_comma, last_dot)
+    int_part = re.sub(r"[^\d\-\+]", "", t[:last_sep]) or "0"
+    frac_part = re.sub(r"\D", "", t[last_sep+1:]) or "0"
+    return float(f"{int_part}.{frac_part}")
+
 @st.cache_data(show_spinner=False)
 def load_country_centers():
     """
-    Baixa a tabela do gist e retorna:
-      - dict: {Country -> (lat, lon)}
-      - DataFrame bruto (para debug)
-    Fallback: usa COUNTRY_CENTER estático.
+    Carrega países -> (lat, lon).
+    Ordem:
+      1) country-coord.csv local (UTF-8, depois Latin-1)
+      2) gist online
+      3) fallback COUNTRY_CENTER
+    Retorna: (dict, DataFrame)
     """
+    # 1) Local (UTF-8 depois Latin-1)
+    for enc in ["utf-8", "latin-1"]:
+        try:
+            if COUNTRY_CSV_LOCAL.exists():
+                df = _try_read_countries_csv(str(COUNTRY_CSV_LOCAL), encoding=enc)
+                cols_lower = [c.strip().lower() for c in df.columns]
+                df.columns = cols_lower
+                c_country = _pick_col(cols_lower, ["country", "name"])
+                c_lat = _pick_col(cols_lower, ["latitude (average)", "latitude", "lat"])
+                c_lon = _pick_col(cols_lower, ["longitude (average)", "longitude", "lon"])
+                if not (c_country and c_lat and c_lon):
+                    raise ValueError("Colunas não encontradas no CSV local.")
+                df["__lat"] = df[c_lat].apply(_num_locale_safe)
+                df["__lon"] = df[c_lon].apply(_num_locale_safe)
+                df = df.dropna(subset=["__lat", "__lon"])
+                mapping = {row[c_country]: (float(row["__lat"]), float(row["__lon"])) for _, row in df.iterrows()}
+                return mapping, df
+        except Exception:
+            pass
+
+    # 2) Gist (online)
     try:
-        # separa por 2+ espaços para preservar nomes compostos
-        df = pd.read_csv(GIST_COUNTRIES_RAW, sep=r"\s{2,}", engine="python")
+        df = _try_read_countries_csv(GIST_COUNTRIES_RAW, encoding="utf-8")
         cols_lower = [c.strip().lower() for c in df.columns]
         df.columns = cols_lower
-
-        def _find(options):
-            for opt in options:
-                if opt in cols_lower:
-                    return opt
-            return None
-
-        c_country = _find(["country"])
-        c_lat = _find(["latitude (average)", "latitude", "lat"])
-        c_lon = _find(["longitude (average)", "longitude", "lon"])
+        c_country = _pick_col(cols_lower, ["country", "name"])
+        c_lat = _pick_col(cols_lower, ["latitude (average)", "latitude", "lat"])
+        c_lon = _pick_col(cols_lower, ["longitude (average)", "longitude", "lon"])
         if not (c_country and c_lat and c_lon):
-            raise ValueError("Colunas esperadas não encontradas no CSV do gist.")
-
-        def _num(x):
-            if pd.isna(x):
-                return None
-            t = str(x).strip()
-            if ("," not in t) and ("." not in t):
-                digits = re.sub(r"[^\d\-\+]", "", t)
-                return float(digits) if digits else None
-            last_comma = t.rfind(","); last_dot = t.rfind(".")
-            last_sep_idx = max(last_comma, last_dot)
-            int_part = re.sub(r"[^\d\-\+]", "", t[:last_sep_idx]) or "0"
-            frac_part = re.sub(r"\D", "", t[last_sep_idx+1:]) or "0"
-            return float(f"{int_part}.{frac_part}")
-
-        df["__lat"] = df[c_lat].apply(_num)
-        df["__lon"] = df[c_lon].apply(_num)
+            raise ValueError("Colunas não encontradas no CSV do gist.")
+        df["__lat"] = df[c_lat].apply(_num_locale_safe)
+        df["__lon"] = df[c_lon].apply(_num_locale_safe)
         df = df.dropna(subset=["__lat", "__lon"])
-
         mapping = {row[c_country]: (float(row["__lat"]), float(row["__lon"])) for _, row in df.iterrows()}
         return mapping, df
-
     except Exception as e:
         st.caption(f"⚠️ Países do gist indisponíveis, usando fallback local. Motivo: {e}")
-        return COUNTRY_CENTER.copy(), pd.DataFrame(
-            [{"country": k, "latitude": v[0], "longitude": v[1]} for k, v in COUNTRY_CENTER.items()]
-        )
+
+    # 3) Fallback dicionário estático
+    df_fb = pd.DataFrame(
+        [{"country": k, "latitude": v[0], "longitude": v[1]} for k, v in COUNTRY_CENTER.items()]
+    )
+    return COUNTRY_CENTER.copy(), df_fb
 
 # carrega países completos (ou fallback)
 COUNTRY_CENTER_FULL, _df_countries_raw = load_country_centers()
@@ -291,7 +329,7 @@ if st.sidebar.button("🔄 Checar atualizações (Google Sheets)"):
     st.rerun()
 
 # -----------------------------------------------------------------------------
-# 6) Carrega dados
+# 6) Carrega dados (projetos)
 # -----------------------------------------------------------------------------
 df_sheets, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets:
@@ -526,7 +564,7 @@ else:
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 13) Country helper (prefill) — usando lista completa do gist
+# 13) Country helper (prefill) — usando lista completa
 # -----------------------------------------------------------------------------
 st.subheader("Country helper (prefill)")
 colh1, colh2, colh3 = st.columns([2,1,1])
