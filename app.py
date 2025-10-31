@@ -9,7 +9,7 @@ import re
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List
 
 # =============================================================================
 # 0) PAGE CONFIG
@@ -21,7 +21,7 @@ st.set_page_config(
 )
 
 # =============================================================================
-# 1) GOOGLE SHEETS / EMAILJS
+# 1) CONSTANTS / SHEETS / EMAILJS
 # =============================================================================
 REQUIRED_HEADERS = [
     "country","city","lat","lon","project_name","years","status",
@@ -29,6 +29,9 @@ REQUIRED_HEADERS = [
     "submitter_email","is_edit","edit_target","edit_request",
     "approved","created_at"
 ]
+
+# Public Messages sheet config
+MESSAGES_SHEET_NAME = "Public Messages"
 MESSAGE_HEADERS = ["name","email","message","approved","created_at"]
 
 @st.cache_resource(show_spinner=False)
@@ -73,17 +76,13 @@ def _open_or_create_worksheet(ws_name: str, init_headers: Optional[List[str]] = 
     except Exception as e:
         return None, f"Failed to open worksheet '{ws_name}': {e}"
 
-def _gs_open_worksheet(ws_name: str):
-    # Mantido para compatibilidade, mas preferimos _open_or_create_worksheet nos atalho abaixo
-    return _open_or_create_worksheet(ws_name, None)
-
 def _ws_projects():
     ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME") or "projects"
     return _open_or_create_worksheet(ws_name, REQUIRED_HEADERS)
 
 def _ws_messages():
-    ws_name = st.secrets.get("SHEETS_MESSAGES_WS") or "messages"
-    return _open_or_create_worksheet(ws_name, MESSAGE_HEADERS)
+    # always use the "Public Messages" sheet
+    return _open_or_create_worksheet(MESSAGES_SHEET_NAME, MESSAGE_HEADERS)
 
 def _col_letter(idx0: int) -> str:
     n = idx0 + 1
@@ -132,7 +131,7 @@ def ensure_headers(required_headers=REQUIRED_HEADERS):
         return False, f"Failed to adjust projects header: {e}"
 
 def ensure_message_headers():
-    """Ensure the MESSAGES sheet header exists."""
+    """Ensure the Public Messages sheet header exists."""
     ws, err = _ws_messages()
     if err or ws is None:
         return False, err or "Messages worksheet unavailable."
@@ -418,6 +417,7 @@ else:
         st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
         st.rerun()
 
+st.markdown("---")
 
 # =============================================================================
 # 6) ADD / EDIT PROJECT (ALWAYS GOES TO REVIEW QUEUE)
@@ -674,6 +674,7 @@ st.markdown("---")
 # =============================================================================
 st.header("Community message board")
 
+# ---------- Form: submit message ----------
 with st.form("message_form"):
     msg_name = st.text_input("Your full name", placeholder="First Last")
     msg_email = st.text_input("Email (optional)", placeholder="name@org.org")
@@ -688,13 +689,16 @@ def append_message_to_sheet(name: str, email: str, message: str) -> tuple[bool, 
         ensure_message_headers()
         row = {
             "name": name.strip(),
-            "email": email.strip(),
+            "email": (email or "").strip(),
             "message": message.strip(),
-            "approved": "FALSE",
+            "approved": "FALSE",  # entra pendente
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
         header = ws.row_values(1)
-        values = [row.get(col, "") for col in header] if header else list(row.values())
+        if not header:
+            ws.update('A1', [MESSAGE_HEADERS])
+            header = MESSAGE_HEADERS
+        values = [row.get(col, "") for col in header]
         ws.append_row(values, value_input_option="RAW")
         return True, "Message queued for approval."
     except Exception as e:
@@ -706,14 +710,15 @@ if send_msg:
     elif not msg_text.strip():
         st.warning("Please write a message.")
     else:
-        ok, msg = append_message_to_sheet(msg_name, msg_email or "", msg_text)
+        ok, msg = append_message_to_sheet(msg_name, msg_email, msg_text)
         if ok:
             st.success("✅ Message sent for approval.")
         else:
             st.warning(f"⚠️ {msg}")
 
+# ---------- Load: messages ----------
 @st.cache_data(show_spinner=False)
-def load_approved_messages():
+def _load_messages():
     ws, err = _ws_messages()
     if err or ws is None:
         return pd.DataFrame(), False, err
@@ -721,37 +726,63 @@ def load_approved_messages():
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
         if df.empty:
-            return pd.DataFrame(), True, None
+            # garante colunas para a UI mesmo vazia
+            for c in MESSAGE_HEADERS:
+                if c not in df.columns:
+                    df[c] = ""
+            return df, True, None
+        # normaliza colunas obrigatórias
         for c in MESSAGE_HEADERS:
             if c not in df.columns:
                 df[c] = ""
-        df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
-        return df.sort_values("created_at", ascending=False), True, None
+        # normaliza Approved
+        df["approved"] = df["approved"].astype(str).str.upper().isin(["TRUE", "YES", "1"])
+        # ordena por data se existir
+        if "created_at" in df.columns:
+            df = df.sort_values("created_at", ascending=False)
+        return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading messages: {e}"
 
-st.subheader("Recent public messages")
-df_msgs, ok_msgs, err_msgs = load_approved_messages()
+st.subheader("Public messages")
+
+df_msgs, ok_msgs, err_msgs = _load_messages()
 if not ok_msgs:
-    st.caption(f"⚠️ {err_msgs}")
+    st.caption(f"⚠️ {err_msgs or 'Could not load messages.'}")
 elif df_msgs.empty:
-    st.info("No public messages yet.")
+    st.info("No messages yet.")
 else:
-    for _, r in df_msgs.head(12).iterrows():
-        name = r.get("name","").strip() or "Anonymous"
-        email = r.get("email","").strip()
-        created = r.get("created_at","")
-        body = r.get("message","").strip()
-        st.markdown(
-            f"""
-            <div style="border:1px solid #334155;background:#0b1220;border-radius:12px;padding:12px;margin-bottom:10px;">
-              <div style="color:#e5e7eb;font-weight:600;">{name}
-                <span style="color:#64748b;font-weight:400;font-size:0.85rem;">{(' • '+email) if email else ''}</span>
-              </div>
-              <div style="color:#94a3b8;font-size:0.75rem;margin-top:2px;">{created}</div>
-              <div style="color:#cbd5e1;margin-top:8px;">{body}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
+    tab_pub, tab_all = st.tabs(["Public (Approved)", "All (Admin view)"])
+
+    with tab_pub:
+        df_pub = df_msgs[df_msgs["approved"]]
+        if df_pub.empty:
+            st.info("No approved messages yet.")
+        else:
+            for _, r in df_pub.head(50).iterrows():
+                name   = (r.get("name","") or "").strip() or "Anonymous"
+                email  = (r.get("email","") or "").strip()
+                created= (r.get("created_at","") or "").strip()
+                body   = (r.get("message","") or "").strip()
+                st.markdown(
+                    f"""
+                    <div style="border:1px solid #334155;background:#0b1220;border-radius:12px;padding:12px;margin-bottom:10px;">
+                      <div style="color:#e5e7eb;font-weight:600;">{name}
+                        <span style="color:#64748b;font-weight:400;font-size:0.85rem;">{(' • '+email) if email else ''}</span>
+                      </div>
+                      <div style="color:#94a3b8;font-size:0.75rem;margin-top:2px;">{created}</div>
+                      <div style="color:#cbd5e1;margin-top:8px; white-space:pre-wrap;">{body}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+    with tab_all:
+        show_cols = ["name","email","message","approved","created_at"]
+        present = [c for c in show_cols if c in df_msgs.columns]
+        st.dataframe(
+            df_msgs[present].reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
         )
 
