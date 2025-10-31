@@ -4,12 +4,21 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 from datetime import datetime
+import re
 
-# Integrações opcionais (Sheets + Email)
+# ===== Integrações opcionais =====
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
-from io import StringIO
+
+# tenta importar pyproj para converter Web Mercator -> WGS84, se necessário
+try:
+    from pyproj import Transformer
+    _HAS_PYPROJ = True
+    _WM_TO_WGS84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+except Exception:
+    _HAS_PYPROJ = False
+    _WM_TO_WGS84 = None
 
 # -----------------------------------------------------------------------------
 # 0) Configs de página
@@ -19,35 +28,6 @@ st.set_page_config(
     layout="wide",
     page_icon="🌍",
 )
-
-# Barra superior: título + refresh
-colA, colB = st.columns([1, 0.25])
-with colA:
-    st.markdown(
-        """
-        <div style="
-            background: linear-gradient(90deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
-            padding: 1.0rem 1.2rem;
-            border-radius: 0.75rem;
-            border: 1px solid #334155;
-            margin-bottom: 0.5rem;
-        ">
-            <div style="color:#fff; font-size:1.1rem; font-weight:600;">
-                IDEAMAPS Global Metadata Explorer 🌍
-            </div>
-            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.3;">
-                Catálogo vivo de projetos e datasets (spatial / quantitative / qualitative)
-                produzidos pela rede IDEAMAPS e parceiros.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-with colB:
-    if st.button("🔄 Refresh data (clear cache)", use_container_width=True):
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.success("Cache limpo. Dados serão recarregados agora.")
 
 # -----------------------------------------------------------------------------
 # 1) Fallback local (mostra algo mesmo sem Sheets)
@@ -102,9 +82,10 @@ FALLBACK_DATA = [
 FALLBACK_DF = pd.DataFrame(FALLBACK_DATA)
 
 # -----------------------------------------------------------------------------
-# 2) Country → (lat, lon) para auto-preencher o formulário
+# 2) Country helper (para pré-preencher lat/lon no formulário)
 # -----------------------------------------------------------------------------
 COUNTRY_CENTER = {
+    # África / Ásia (exemplos)
     "Nigeria": (9.0820, 8.6753),
     "Bangladesh": (23.6850, 90.3563),
     "Kenya": (-0.0236, 37.9062),
@@ -113,6 +94,7 @@ COUNTRY_CENTER = {
     "India": (22.9734, 78.6569),
     "Pakistan": (30.3753, 69.3451),
     "Nepal": (28.3949, 84.1240),
+    # Américas / Europa
     "Brazil": (-14.2350, -51.9253),
     "United Kingdom": (54.0, -2.0),
     "Spain": (40.4637, -3.7492),
@@ -120,14 +102,14 @@ COUNTRY_CENTER = {
 }
 
 # -----------------------------------------------------------------------------
-# 3) Conectores (Sheets + EmailJS) com cache
+# 3) Conectores (Google Sheets + EmailJS)
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def _gs_worksheet():
-    """Tenta abrir worksheet do Google Sheets. Retorna (ws, msg_erro)"""
+    """Tenta abrir worksheet do Google Sheets. Retorna (ws, msg_erro)."""
     try:
         ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
-        ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")  # ex.: "submissions"
+        ws_name = st.secrets.get("SHEETS_WORKSHEET_NAME")
         if not ss_id or not ws_name:
             return None, "Secrets ausentes: defina SHEETS_SPREADSHEET_ID e SHEETS_WORKSHEET_NAME."
 
@@ -146,12 +128,9 @@ def _gs_worksheet():
     except Exception as e:
         return None, f"Falha ao conectar no Google Sheets: {e}"
 
-@st.cache_data(show_spinner=False, ttl=60)
+@st.cache_data(show_spinner=False)
 def load_approved_projects():
-    """
-    Lê aprovados (approved==TRUE) do Sheets.
-    Se falhar, retorna FALLBACK_DF e flag from_sheets=False.
-    """
+    """Lê aprovados (approved==TRUE) do Sheets. Se falhar, retorna FALLBACK_DF."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return FALLBACK_DF.copy(), False, err or "Worksheet indisponível."
@@ -162,30 +141,24 @@ def load_approved_projects():
         if df.empty:
             return FALLBACK_DF.copy(), False, "Planilha vazia; usando fallback local."
 
-        # Normaliza esperadas
-        needed = ["country", "city", "lat", "lon", "project_name", "years", "status",
-                  "data_types", "description", "contact", "access", "url", "approved"]
-        for col in needed:
-            if col not in df.columns:
-                df[col] = ""
+        # Colunas esperadas
+        cols = ["country", "city", "lat", "lon", "project_name", "years", "status",
+                "data_types", "description", "contact", "access", "url", "approved"]
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ""
 
-        # Filtra aprovados
+        # Apenas aprovados
         df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
-
-        # Converte lat/lon
-        for c in ("lat", "lon"):
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
         return df, True, None
     except Exception as e:
         return FALLBACK_DF.copy(), False, f"Erro lendo a planilha: {e}"
 
 def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
-    """Anexa submissão na aba definida em SHEETS_WORKSHEET_NAME (fila de aprovação)."""
+    """Anexa submissão na aba 'submissions' (fila de aprovação)."""
     ws, err = _gs_worksheet()
     if err or ws is None:
         return False, err or "Worksheet indisponível."
-
     try:
         row = {
             "country": payload.get("country", ""),
@@ -215,10 +188,8 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
     svc = st.secrets.get("EMAILJS_SERVICE_ID")
     tpl = st.secrets.get("EMAILJS_TEMPLATE_ID")
     key = st.secrets.get("EMAILJS_PUBLIC_KEY")
-
     if not (svc and tpl and key):
         return False, "EmailJS não configurado nas secrets; pulando envio."
-
     try:
         resp = requests.post(
             "https://api.emailjs.com/api/v1.0/email/send",
@@ -237,7 +208,30 @@ def try_send_email_via_emailjs(template_params: dict) -> tuple[bool, str]:
         return False, f"Falha no envio de e-mail: {e}"
 
 # -----------------------------------------------------------------------------
-# 4) Carrega dados aprovados + concatena com fallback
+# 4) Header
+# -----------------------------------------------------------------------------
+st.markdown(
+    """
+    <div style="
+        background: linear-gradient(90deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+        padding: 1.2rem 1.5rem;
+        border-radius: 0.75rem;
+        border: 1px solid #334155;
+        margin-bottom: 1rem;">
+        <div style="color:#fff; font-size:1.2rem; font-weight:600;">
+            IDEAMAPS Global Metadata Explorer 🌍
+        </div>
+        <div style="color:#94a3b8; font-size:0.85rem; line-height:1.3;">
+            Catálogo vivo de projetos e datasets (spatial / quantitative / qualitative)
+            produzidos pela rede IDEAMAPS e parceiros.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# -----------------------------------------------------------------------------
+# 5) Carrega aprovados + concatena com fallback
 # -----------------------------------------------------------------------------
 df_sheets, from_sheets, debug_msg = load_approved_projects()
 if not from_sheets:
@@ -248,12 +242,102 @@ if not from_sheets:
 df_all = pd.concat([FALLBACK_DF, df_sheets], ignore_index=True)
 df_all = df_all.drop_duplicates(subset=["city", "project_name"], keep="first")
 
-for c in ("lat", "lon"):
-    if c in df_all.columns:
-        df_all[c] = pd.to_numeric(df_all[c], errors="coerce")
+# -----------------------------------------------------------------------------
+# 6) Normalização de coordenadas
+# -----------------------------------------------------------------------------
+DMS_RE = re.compile(
+    r"""^\s*
+        (?P<deg>-?\d+(?:[.,]\d+)?)
+        (?:[°\s]+(?P<min>\d+(?:[.,]\d+)?))?
+        (?:['\s]+(?P<sec>\d+(?:[.,]\d+)?))?
+        ["\s]*?(?P<hem>[NnSsEeWw])?
+        \s*$""",
+    re.VERBOSE
+)
+
+def _to_float(s):
+    if pd.isna(s):
+        return None
+    t = str(s).strip().replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", t)
+    return float(m.group()) if m else None
+
+def _dms_to_decimal(val):
+    if pd.isna(val):
+        return None
+    text = str(val).strip().replace(",", ".")
+    m = DMS_RE.match(text)
+    if not m:
+        return None
+    deg = float(m.group("deg"))
+    minutes = float(m.group("min")) if m.group("min") else 0.0
+    seconds = float(m.group("sec")) if m.group("sec") else 0.0
+    hem = (m.group("hem") or "").upper()
+    dec = abs(deg) + minutes/60.0 + seconds/3600.0
+    if deg < 0:
+        dec = -dec
+    if hem in ("S", "W"):
+        dec = -abs(dec)
+    if hem in ("N", "E"):
+        dec = abs(dec)
+    return dec
+
+def _coerce_coord(val, kind):
+    dec = _dms_to_decimal(val)
+    if dec is None:
+        dec = _to_float(val)
+    if dec is None:
+        return None
+    if kind == "lat" and not (-90.0 <= dec <= 90.0):
+        return None
+    if kind == "lon" and not (-180.0 <= dec <= 180.0):
+        return None
+    return dec
+
+def _looks_like_webmercator(x, y):
+    return (
+        isinstance(x, (int, float)) and isinstance(y, (int, float)) and
+        1000 < abs(x) <= 3e7 and 1000 < abs(y) <= 3e7
+    )
+
+def normalize_latlon(df, lat_cols=("lat","latitude"), lon_cols=("lon","lng","longitude")):
+    lat_src = next((c for c in lat_cols if c in df.columns), None)
+    lon_src = next((c for c in lon_cols if c in df.columns), None)
+    if not lat_src or not lon_src:
+        return df
+
+    lat_vals, lon_vals = [], []
+    for a, b in zip(df[lon_src].tolist(), df[lat_src].tolist()):
+        lat = _coerce_coord(b, "lat")
+        lon = _coerce_coord(a, "lon")
+
+        if lat is None or lon is None:
+            lat2 = _coerce_coord(a, "lat")
+            lon2 = _coerce_coord(b, "lon")
+            if lat2 is not None and lon2 is not None:
+                lat, lon = lat2, lon2
+
+        if (lat is None or lon is None) and _HAS_PYPROJ:
+            xf = _to_float(a)
+            yf = _to_float(b)
+            if xf is not None and yf is not None and _looks_like_webmercator(xf, yf):
+                try:
+                    lon_wgs, lat_wgs = _WM_TO_WGS84.transform(xf, yf)
+                    if -90 <= lat_wgs <= 90 and -180 <= lon_wgs <= 180:
+                        lat, lon = lat_wgs, lon_wgs
+                except Exception:
+                    pass
+
+        lat_vals.append(lat)
+        lon_vals.append(lon)
+
+    out = df.copy()
+    out["lat"] = pd.Series(lat_vals, index=out.index)
+    out["lon"] = pd.Series(lon_vals, index=out.index)
+    return out.dropna(subset=["lat", "lon"])
 
 # -----------------------------------------------------------------------------
-# 5) Sidebar — filtros
+# 7) Sidebar — filtros
 # -----------------------------------------------------------------------------
 st.sidebar.markdown(
     """
@@ -269,22 +353,28 @@ st.sidebar.markdown(
 )
 all_countries = ["All"] + sorted(df_all["country"].dropna().unique().tolist())
 selected_country = st.sidebar.selectbox("Filter by country", all_countries)
-df = df_all if selected_country == "All" else df_all[df_all["country"] == selected_country].copy()
+df_filtered = df_all if selected_country == "All" else df_all[df_all["country"] == selected_country].copy()
 
-# -----------------------------------------------------------------------------
-# 6) Mapa (apenas linhas com lat/lon válidos)
-# -----------------------------------------------------------------------------
-df_map = df.dropna(subset=["lat", "lon"]).copy()
+# Normaliza coordenadas para os dados visíveis
+df_norm = normalize_latlon(df_filtered)
 
-if not df_map.empty:
-    lat0, lon0 = df_map["lat"].mean(), df_map["lon"].mean()
+# Se tudo ficou vazio (coords ruins), tenta normalizar o conjunto todo como diagnóstico
+if df_norm.empty:
+    df_norm = normalize_latlon(df_all)
+
+# Centro do mapa
+if not df_norm.empty:
+    lat0, lon0 = df_norm["lat"].mean(), df_norm["lon"].mean()
 else:
     lat0, lon0 = 15, 0
 
+# -----------------------------------------------------------------------------
+# 8) Mapa
+# -----------------------------------------------------------------------------
 m = folium.Map(location=[lat0, lon0], zoom_start=2, tiles="CartoDB dark_matter")
 
 grouped = (
-    df_map.groupby(["country", "city", "lat", "lon"], as_index=False)
+    df_norm.groupby(["country", "city", "lat", "lon"], as_index=False)
     .agg({"project_name": list})
 )
 
@@ -328,60 +418,37 @@ for _, row in grouped.iterrows():
     ).add_to(m)
 
 st_folium(m, height=500, width=None)
-st.markdown("---")
 
-# -----------------------------------------------------------------------------
-# 7) Tabela dos pontos visíveis + Download CSV/HTML
-# -----------------------------------------------------------------------------
-st.markdown("### Projects on the map (current filter)")
-if df_map.empty:
-    st.caption("Nenhum ponto com latitude/longitude válidos para o filtro atual.")
-else:
-    # organiza colunas amigáveis
-    cols = ["country", "city", "lat", "lon", "project_name", "years", "status", "data_types", "description", "contact", "access", "url"]
-    cols = [c for c in cols if c in df_map.columns]
-    df_map_view = df_map[cols].sort_values(["country", "city", "project_name"], na_position="last")
-    st.dataframe(df_map_view, use_container_width=True, hide_index=True)
-
-    # CSV
-    csv_buf = StringIO()
-    df_map_view.to_csv(csv_buf, index=False)
-    st.download_button(
-        "⬇️ Download CSV",
-        data=csv_buf.getvalue().encode("utf-8"),
-        file_name="ideamaps_projects_on_map.csv",
-        mime="text/csv",
-    )
-
-    # HTML (tabela)
-    html_table = df_map_view.to_html(index=False, escape=False)
-    st.download_button(
-        "⬇️ Download HTML",
-        data=html_table.encode("utf-8"),
-        file_name="ideamaps_projects_on_map.html",
-        mime="text/html",
-    )
+# Diagnóstico (opcional)
+with st.expander("🧭 Coord diagnostics", expanded=False):
+    st.write("No filtro:", len(df_filtered))
+    st.write("Plotadas (lat/lon válidos):", len(df_norm))
+    if len(df_filtered) and len(df_norm) < len(df_filtered):
+        bad = df_filtered.copy()
+        good_keys = df_norm[["country","city","lat","lon"]].drop_duplicates()
+        bad = bad.merge(good_keys, on=["country","city","lat","lon"], how="left", indicator=True)
+        bad = bad[bad["_merge"]=="left_only"].drop(columns=["_merge"])
+        st.write("Linhas sem coordenadas válidas:", len(bad))
+        st.dataframe(bad.head(15), use_container_width=True)
 
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 8) Lista (cards)
+# 9) Cards de projetos
 # -----------------------------------------------------------------------------
 st.markdown(
     "<h3 style='color:#fff; margin-bottom:0.5rem;'>Projects</h3>"
     "<p style='color:#94a3b8; font-size:0.8rem; margin-top:0;'>Resumo dos projetos conhecidos no país selecionado.</p>",
     unsafe_allow_html=True
 )
-for _, row in df.iterrows():
+for _, row in df_filtered.iterrows():
     url_html = (
         f"<a href='{row.get('url','')}' target='_blank' style='color:#38bdf8; text-decoration:none;'>🔗 Open project</a>"
-        if pd.notna(row.get("url")) and str(row.get("url")).strip() != ""
-        else ""
+        if pd.notna(row.get("url")) and str(row.get("url")).strip() != "" else ""
     )
     st.markdown(
         f"""
-        <div style="
-            font-size:0.8rem; line-height:1.4;
+        <div style="font-size:0.8rem; line-height:1.4;
             border:1px solid #334155; background-color:#1e293b;
             border-radius:12px; padding:12px 16px; margin-bottom:12px;">
           <div style="font-size:0.9rem; font-weight:600; color:#fff;">
@@ -400,9 +467,7 @@ for _, row in df.iterrows():
             <b>Contact:</b> {row.get('contact','')}<br/>
             <b>Access:</b> {row.get('access','')}
           </div>
-          <div style="margin-top:8px;">
-            {url_html}
-          </div>
+          <div style="margin-top:8px;">{url_html}</div>
         </div>
         """,
         unsafe_allow_html=True
@@ -411,43 +476,72 @@ for _, row in df.iterrows():
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# 9) Formulário — país com auto-preenchimento de lat/lon (callback fora do form)
+# 10) Tabela dos pontos do mapa + Download CSV/HTML
+# -----------------------------------------------------------------------------
+st.subheader("Data on map (downloadable)")
+if df_norm.empty:
+    st.info("Nenhum ponto com coordenadas válidas para o filtro atual.")
+else:
+    cols_show = ["country","city","lat","lon","project_name","years","status","url"]
+    tbl = (df_norm[cols_show]
+           .copy()
+           .sort_values(["country","city","project_name"])
+           .reset_index(drop=True))
+    st.dataframe(tbl, use_container_width=True)
+
+    csv_bytes = tbl.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download CSV", data=csv_bytes, file_name="ideamaps_on_map.csv", mime="text/csv")
+
+    html_bytes = tbl.to_html(index=False).encode("utf-8")
+    st.download_button("⬇️ Download HTML", data=html_bytes, file_name="ideamaps_on_map.html", mime="text/html")
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
+# 11) Helper de país (fora do form) para pré-preencher lat/lon
+#     — evita callback dentro do st.form (que causava erro)
+# -----------------------------------------------------------------------------
+st.subheader("Country helper (prefill)")
+colh1, colh2, colh3 = st.columns([2,1,1])
+with colh1:
+    helper_choice = st.selectbox(
+        "Choose a country to prefill (optional)",
+        [""] + sorted(COUNTRY_CENTER.keys()),
+        index=0
+    )
+with colh2:
+    if "lat_input" not in st.session_state:
+        st.session_state.lat_input = 0.0
+    if "lon_input" not in st.session_state:
+        st.session_state.lon_input = 0.0
+    if "form_country_text" not in st.session_state:
+        st.session_state.form_country_text = ""
+
+    if helper_choice:
+        cc = COUNTRY_CENTER.get(helper_choice)
+        if cc:
+            st.session_state.lat_input = float(cc[0])
+            st.session_state.lon_input = float(cc[1])
+            st.session_state.form_country_text = helper_choice
+
+with colh3:
+    st.caption(f"Prefilled lat/lon: {st.session_state.lat_input}, {st.session_state.lon_input}")
+
+st.markdown("---")
+
+# -----------------------------------------------------------------------------
+# 12) Formulário — submissão para fila (Sheets) + EmailJS
 # -----------------------------------------------------------------------------
 st.header("Add new project (goes to review queue)")
 
-# session_state
-if "form_country" not in st.session_state:
-    st.session_state.form_country = ""
-if "lat_input" not in st.session_state:
-    st.session_state.lat_input = 0.0
-if "lon_input" not in st.session_state:
-    st.session_state.lon_input = 0.0
-
-def _apply_country_center(country: str):
-    if country in COUNTRY_CENTER:
-        st.session_state.lat_input, st.session_state.lon_input = COUNTRY_CENTER[country]
-
-form_country_options = sorted(set(list(COUNTRY_CENTER.keys()) + df_all["country"].dropna().tolist()))
-
-st.subheader("Select country")
-st.caption("Ao escolher o país, latitude/longitude serão preenchidos automaticamente (você pode editar depois).")
-st.session_state.form_country = st.selectbox(
-    "Country (for auto lat/lon)",
-    options=[""] + form_country_options,
-    index=([""] + form_country_options).index(st.session_state.form_country) if st.session_state.form_country in ([""] + form_country_options) else 0,
-    key="country_selector_outside_form",
-    on_change=lambda: _apply_country_center(st.session_state.country_selector_outside_form),
-)
-
 with st.form("add_project_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        new_city = st.text_input("City")
-        new_lat = st.number_input("Latitude", value=float(st.session_state.lat_input), format="%.6f", key="lat_input")
-    with col2:
-        new_name = st.text_input("Project name")
-        new_lon = st.number_input("Longitude", value=float(st.session_state.lon_input), format="%.6f", key="lon_input")
+    new_country = st.text_input("Country", value=st.session_state.form_country_text)
+    new_city = st.text_input("City")
 
+    new_lat = st.number_input("Latitude", value=float(st.session_state.lat_input), format="%.6f", key="lat_input")
+    new_lon = st.number_input("Longitude", value=float(st.session_state.lon_input), format="%.6f", key="lon_input")
+
+    new_name = st.text_input("Project name")
     new_years = st.text_input("Years (e.g. 2022–2024)")
     new_status = st.selectbox("Status", ["Active", "Legacy", "Completed", "Planning"])
     new_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
@@ -460,7 +554,7 @@ with st.form("add_project_form"):
 
 if submitted:
     new_row = {
-        "country": st.session_state.form_country,
+        "country": new_country,
         "city": new_city,
         "lat": st.session_state.lat_input,
         "lon": st.session_state.lon_input,
