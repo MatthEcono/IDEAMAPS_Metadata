@@ -460,6 +460,8 @@ if "_edit_mode" not in st.session_state:
     st.session_state["_edit_mode"] = False
 if "_before_row" not in st.session_state:
     st.session_state["_before_row"] = {}
+if "_reset_city_inputs" not in st.session_state:
+    st.session_state["_reset_city_inputs"] = False
 
 def get_country_center(name: str):
     tpl = COUNTRY_CENTER_FULL.get(name)
@@ -481,7 +483,14 @@ st.session_state.countries_sel = st.multiselect(
     default=st.session_state.get("countries_sel", []),
     help="Select all countries where this project is implemented."
 )
+
 options_for_city = st.session_state.get("countries_sel", [])
+
+# --- LIMPEZA ADIADA DE INPUTS DO FORM (resolve StreamlitAPIException)
+if st.session_state.get("_reset_city_inputs", False):
+    st.session_state.pop("city_to_add", None)       # limpa textbox
+    st.session_state.pop("country_for_city", None)  # limpa selectbox
+    st.session_state["_reset_city_inputs"] = False
 
 with st.form("add_project_form", clear_on_submit=False):
     if st.session_state["_edit_mode"]:
@@ -499,10 +508,12 @@ with st.form("add_project_form", clear_on_submit=False):
 
     colc1, colc2, colc3 = st.columns([2, 2, 1])
     with colc1:
+        # Evita index=None quando não houver países selecionados
+        _opts = options_for_city if options_for_city else ["—"]
         selected_country_for_city = st.selectbox(
             "Select implementation country for the city",
-            options=options_for_city,
-            index=0 if options_for_city else None,
+            options=_opts,
+            index=0,
             disabled=not bool(options_for_city),
             key="country_for_city",
         )
@@ -512,15 +523,12 @@ with st.form("add_project_form", clear_on_submit=False):
         st.write("")
         add_one = st.form_submit_button("➕ Add to this country", use_container_width=True, disabled=not bool(options_for_city))
 
-    # --- ADD ONE: adiciona e LIMPA campo + rerun (evita duplicar por clique repetido)
-    if add_one and selected_country_for_city and city_to_add.strip():
+    # --- ADD ONE: adiciona e LIMPA via flag + rerun (não muta widget durante submit)
+    if add_one and options_for_city and selected_country_for_city and selected_country_for_city != "—" and city_to_add.strip():
         cities = [c.strip() for c in city_to_add.split(",") if c.strip()]
         for c in cities:
             _add_city_entry(selected_country_for_city, c)
-        # limpa inputs e roda novamente
-        st.session_state["city_to_add"] = ""
-        if options_for_city:
-            st.session_state["country_for_city"] = options_for_city[0]
+        st.session_state["_reset_city_inputs"] = True
         st.rerun()
 
     add_all = st.form_submit_button(
@@ -529,15 +537,13 @@ with st.form("add_project_form", clear_on_submit=False):
         disabled=not (options_for_city and city_to_add.strip())
     )
 
-    # --- ADD ALL: adiciona e LIMPA campo + rerun
+    # --- ADD ALL: idem
     if add_all:
         cities_bulk = [c.strip() for c in city_to_add.split(",") if c.strip()]
         for ctry in options_for_city:
             for c in cities_bulk:
                 _add_city_entry(ctry, c)
-        st.session_state["city_to_add"] = ""
-        if options_for_city:
-            st.session_state["country_for_city"] = options_for_city[0]
+        st.session_state["_reset_city_inputs"] = True
         st.rerun()
 
     if st.session_state.city_list:
@@ -673,6 +679,7 @@ if submitted:
 
         if ok_all:
             st.success(f"✅ {'Edit queued' if st.session_state.get('_edit_mode') else 'Submission saved'} ({total_rows} row(s) added).")
+            # limpa prefill e modo de edição
             for k in list(st.session_state.keys()):
                 if str(k).startswith("prefill_"):
                     st.session_state[k] = ""
