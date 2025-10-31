@@ -265,7 +265,7 @@ def load_country_centers():
         return _parse_number_loose(x)
     df["lat"] = df[c_lat].apply(_parse_number_loose_local)
     df["lon"] = df[c_lon].apply(_parse_number_loose_local)
-        raise RuntimeError("CSV must contain: 'Country', 'Latitude (average)', 'Longitude (average)'.")
+    raise RuntimeError("CSV must contain: 'Country', 'Latitude (average)', 'Longitude (average)'.")
     df["lat"] = df[c_lat].apply(_parse_number_loose)
     df["lon"] = df[c_lon].apply(_parse_number_loose)
     df = df.dropna(subset=["lat", "lon"])
