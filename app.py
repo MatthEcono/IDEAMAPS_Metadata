@@ -1,27 +1,43 @@
 # app.py
-import streamlit as st
-import pandas as pd
-import folium
-from streamlit_folium import st_folium
-from datetime import datetime
+import base64
 from pathlib import Path
-import re
-import requests
-import gspread
-from google.oauth2.service_account import Credentials
 from typing import Optional, List
 
+import gspread
+import pandas as pd
+import re
+import requests
+import streamlit as st
+from PIL import Image
+from datetime import datetime
+from google.oauth2.service_account import Credentials
+import folium
+from streamlit_folium import st_folium
+
 # =============================================================================
-# 0) PAGE CONFIG
+# 0) PAGE CONFIG + LOGO
 # =============================================================================
+APP_DIR = Path(__file__).parent
+LOGO_PATH = APP_DIR / "ideamaps.png"
+
+_logo_img = None
+_logo_b64 = None
+if LOGO_PATH.exists():
+    try:
+        _logo_img = Image.open(LOGO_PATH)
+        with open(LOGO_PATH, "rb") as f:
+            _logo_b64 = base64.b64encode(f.read()).decode("utf-8")
+    except Exception:
+        _logo_img, _logo_b64 = None, None
+
 st.set_page_config(
     page_title="IDEAMAPS Global Metadata Explorer",
+    page_icon=_logo_img if _logo_img is not None else "🌍",
     layout="wide",
-    page_icon="🌍",
 )
 
 # =============================================================================
-# 1) CONSTANTS / SHEETS / EMAILJS
+# 1) CONSTANTES / SHEETS / EMAILJS
 # =============================================================================
 REQUIRED_HEADERS = [
     "country","city","lat","lon","project_name","years","status",
@@ -192,7 +208,7 @@ def _parse_number_loose(x):
 # =============================================================================
 # 2) LOAD COUNTRIES CSV (LOCAL ONLY)
 # =============================================================================
-COUNTRY_CSV_PATH = Path(__file__).parent / "country-coord.csv"
+COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 
 @st.cache_data(show_spinner=False)
 def load_country_centers():
@@ -213,26 +229,40 @@ def load_country_centers():
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
 # =============================================================================
-# 3) HEADER
+# 3) HEADER COM LOGO
 # =============================================================================
-st.markdown(
-    """
-    <div style="background: linear-gradient(90deg,#0f172a,#1e293b,#0f172a);
-        padding:1.2rem 1.5rem;border-radius:0.75rem;border:1px solid #334155;
-        margin-bottom:1rem;">
-        <div style="color:#fff;font-size:1.2rem;font-weight:600;">
-            IDEAMAPS Global Metadata Explorer 🌍
-        </div>
-        <div style="color:#94a3b8;font-size:0.85rem;line-height:1.3;">
-            Living catalogue of projects and datasets (spatial / quantitative / qualitative) produced by the IDEAMAPS network and partners.
-        </div>
+header_html = f"""
+<div style="
+  display:flex; align-items:center; gap:16px;
+  background: linear-gradient(90deg,#0f172a,#1e293b,#0f172a);
+  border:1px solid #334155; border-radius:14px;
+  padding:14px 16px; margin-bottom:14px;
+">
+  <div style="
+    width:44px; height:44px; border-radius:10px; overflow:hidden;
+    background:#0b1220; display:flex; align-items:center; justify-content:center;
+    flex:0 0 auto;
+  ">
+    {"<img src='data:image/png;base64," + _logo_b64 + "' style='width:100%;height:100%;object-fit:cover;'/>" if _logo_b64 else "🌍"}
+  </div>
+  <div style="display:flex; flex-direction:column;">
+    <div style="color:#fff; font-weight:700; font-size:1.2rem; letter-spacing:0.2px;">
+      IDEAMAPS Global Metadata Explorer
     </div>
-    """,
-    unsafe_allow_html=True,
-)
+    <div style="color:#94a3b8; font-size:0.90rem; line-height:1.3; margin-top:2px;">
+      Living catalogue of projects and datasets (spatial / quantitative / qualitative) produced by the IDEAMAPS network and partners.
+    </div>
+  </div>
+</div>
+"""
+st.markdown(header_html, unsafe_allow_html=True)
+
+# (opcional) logo na sidebar
+if _logo_img is not None:
+    st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # =============================================================================
-# 4) LOAD APPROVED PROJECTS + MAP
+# 4) CARREGA PROJETOS APROVADOS + MAPA
 # =============================================================================
 @st.cache_data(show_spinner=False)
 def load_approved_projects():
@@ -257,7 +287,7 @@ def load_approved_projects():
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading projects: {e}"
 
-# — botão de refresh DEPOIS da função (evita NameError)
+# Refresh
 if st.sidebar.button("🔄 Check updates"):
     load_approved_projects.clear()
     load_country_centers.clear()
@@ -358,7 +388,6 @@ st.subheader("Browse existing entries")
 if df_projects.empty:
     st.info("No data to display yet.")
 else:
-    # chave única legível para seleção
     def _mk_key(row: pd.Series) -> str:
         return " || ".join([
             str(row.get("project_name","")).strip() or "(unnamed)",
@@ -371,14 +400,12 @@ else:
     df_view = df_projects[table_cols].copy()
     df_view["__key__"] = df_projects.apply(_mk_key, axis=1)
 
-    # Tabela somente leitura
     st.dataframe(
         df_view.drop(columns=["__key__"]),
         use_container_width=True,
         hide_index=True
     )
 
-    # Seletor de linha para edição
     options = df_view["__key__"].tolist()
     selected_key = st.selectbox(
         "Select a row to edit (loads into the submission form below)",
@@ -386,19 +413,15 @@ else:
         index=0
     )
 
-    # Botão: carregar no formulário para edição
     if selected_key and st.button("✎ Edit this row"):
-        # linha escolhida na visão
         sel = df_view[df_view["__key__"] == selected_key].iloc[0].to_dict()
+        idx_sel = df_view.index[df_view["__key____" if "__key__" not in df_view.columns else "__key__"] == selected_key][0]  # robust
+        if "__key__" in df_view.columns:
+            idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
 
-        # índice correspondente no df_projects (para acessar colunas não exibidas)
-        idx_sel = df_view.index[df_view["__key__"] == selected_key][0]
-
-        # guarda o "before" completo no session_state para compor o EDIT
         st.session_state["_edit_mode"]  = True
         st.session_state["_before_row"] = df_projects.loc[idx_sel].to_dict()
 
-        # prefill do formulário
         st.session_state["prefill_project_name"] = str(sel.get("project_name",""))
         st.session_state["countries_sel"] = [str(sel.get("country",""))] if sel.get("country","") else []
         st.session_state["city_list"] = []
@@ -454,7 +477,6 @@ st.session_state.countries_sel = st.multiselect(
 options_for_city = st.session_state.get("countries_sel", [])
 
 with st.form("add_project_form", clear_on_submit=False):
-    # aviso de modo edição
     if st.session_state["_edit_mode"]:
         st.markdown("🟦 **Editing an existing entry** — your submission will be queued as an **edit** to the catalogue.")
 
@@ -498,7 +520,6 @@ with st.form("add_project_form", clear_on_submit=False):
             for c in cities_bulk:
                 _add_city_entry(ctry, c)
 
-    # lista com botões Remover
     if st.session_state.city_list:
         st.caption("Cities added (country — city):")
         to_remove_idx = None
@@ -515,7 +536,6 @@ with st.form("add_project_form", clear_on_submit=False):
         if st.checkbox("Clear all cities"):
             st.session_state.city_list = []
 
-    # sem STATUS no formulário
     new_years  = st.text_input("Years (e.g. 2022–2024)", value=st.session_state.get("prefill_years",""))
     new_types  = st.text_area("Data types (Spatial? Quantitative? Qualitative?)", value=st.session_state.get("prefill_data_types",""))
     new_desc   = st.text_area("Short description", value=st.session_state.get("prefill_description",""))
@@ -545,7 +565,7 @@ def append_submission_to_sheet(payload: dict) -> tuple[bool, str]:
             "lon": _fmt_num_str(payload.get("lon", "")),
             "project_name": payload.get("project_name", ""),
             "years": payload.get("years", ""),
-            "status": payload.get("status", ""),  # ficará vazio nas novas submissões
+            "status": payload.get("status", ""),
             "data_types": payload.get("data_types", ""),
             "description": payload.get("description", ""),
             "contact": payload.get("contact", ""),
@@ -580,7 +600,6 @@ def _summarize_changes(before: dict, after: dict) -> str:
     return "; ".join(changes) if changes else "No visible change"
 
 if submitted:
-    # validações
     if not st.session_state.get("countries_sel"):
         st.warning("Please select at least one implementation country.")
     elif not (st.session_state.city_list or st.session_state.get("countries_sel")):
@@ -592,11 +611,7 @@ if submitted:
     else:
         total_rows, ok_all, msg_any = 0, True, None
         entries_preview = []
-
-        # gera pares país—cidade; se não houver cidade, cria registro por país sem cidade
         pairs = st.session_state.city_list[:] if st.session_state.city_list else [f"{c} — " for c in st.session_state.get("countries_sel", [])]
-
-        # “before” para compor resumo de edição, se for o caso
         before = st.session_state.get("_before_row", {}) if st.session_state.get("_edit_mode") else {}
 
         for pair in pairs:
@@ -614,7 +629,7 @@ if submitted:
                 "lon": lon,
                 "project_name": new_name,
                 "years": new_years,
-                "status": "",  # sem status no formulário
+                "status": "",
                 "data_types": new_types,
                 "description": new_desc,
                 "contact": new_contact,
@@ -623,7 +638,6 @@ if submitted:
                 "submitter_email": submitter_email,
             }
 
-            # se está em modo edição, marca como edição e cria resumo de mudanças
             if st.session_state.get("_edit_mode"):
                 edit_target = before.get("project_name", new_name)
                 edit_request = _summarize_changes(before, after_payload)
@@ -639,7 +653,6 @@ if submitted:
 
         if ok_all:
             st.success(f"✅ {'Edit queued' if st.session_state.get('_edit_mode') else 'Submission saved'} ({total_rows} row(s) added).")
-            # limpa estado de edição e prefills
             for k in list(st.session_state.keys()):
                 if str(k).startswith("prefill_"):
                     st.session_state[k] = ""
@@ -652,7 +665,7 @@ if submitted:
         ok_mail, msg_mail = try_send_email_via_emailjs({
             "project_name": new_name,
             "entries": ", ".join([f"{p['country']} — {p['city']}" for p in entries_preview]),
-            "status": "",  # sem status
+            "status": "",
             "years": new_years,
             "url": new_url,
             "submitter_email": submitter_email,
@@ -674,7 +687,6 @@ st.markdown("---")
 # =============================================================================
 st.header("Community message board")
 
-# ---------- Form: submit message ----------
 with st.form("message_form"):
     msg_name = st.text_input("Your full name", placeholder="First Last")
     msg_email = st.text_input("Email (optional)", placeholder="name@org.org")
@@ -691,7 +703,7 @@ def append_message_to_sheet(name: str, email: str, message: str) -> tuple[bool, 
             "name": name.strip(),
             "email": (email or "").strip(),
             "message": message.strip(),
-            "approved": "FALSE",  # entra pendente
+            "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         }
         header = ws.row_values(1)
@@ -716,7 +728,6 @@ if send_msg:
         else:
             st.warning(f"⚠️ {msg}")
 
-# ---------- Load: messages ----------
 @st.cache_data(show_spinner=False)
 def _load_messages():
     ws, err = _ws_messages()
@@ -726,18 +737,14 @@ def _load_messages():
         rows = ws.get_all_records()
         df = pd.DataFrame(rows)
         if df.empty:
-            # garante colunas para a UI mesmo vazia
             for c in MESSAGE_HEADERS:
                 if c not in df.columns:
                     df[c] = ""
             return df, True, None
-        # normaliza colunas obrigatórias
         for c in MESSAGE_HEADERS:
             if c not in df.columns:
                 df[c] = ""
-        # normaliza Approved
         df["approved"] = df["approved"].astype(str).str.upper().isin(["TRUE", "YES", "1"])
-        # ordena por data se existir
         if "created_at" in df.columns:
             df = df.sort_values("created_at", ascending=False)
         return df, True, None
