@@ -865,3 +865,468 @@ else:
             use_container_width=True,
             hide_index=True
         )
+
+# =============================================================================
+# 8) OUTPUTS — DATA MODEL + SHEETS HELPERS (NOVA)
+# =============================================================================
+def section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd):
+    """
+    Cria/acessa a aba 'outputs' no Google Sheets e expõe utilitários:
+      - load_approved_outputs()
+      - append_output_to_sheet(payload)
+    Também define listas fixas pedidas nas sugestões.
+    """
+    OUTPUTS_SHEET_NAME = st.secrets.get("SHEETS_OUTPUTS_WORKSHEET_NAME", "outputs")
+
+    SEC8_HEADERS = [
+        "project",
+        "output_title",
+        "output_type",
+        "output_data_type",      # usado só se output_type == "Dataset"
+        "output_url",
+        "output_country",
+        "output_city",
+        "output_year",
+        "output_desc",
+        "output_contact",
+        "output_email",
+        "project_url",
+        # workflow
+        "submitter_email",
+        "is_edit",
+        "edit_target",
+        "edit_request",
+        "approved",
+        "created_at",
+    ]
+
+    SEC8_PROJECT_OPTIONS = [
+        "IDEAMAPS Networking Grant",
+        "IDEAMAPSudan",
+        "SLUMAP",
+        "Data4HumanRights",
+        "IDEAMAPS Data Ecosystem",
+        "Night Watch",
+        "ONEKANA",
+        "Space4All",
+        "IDEAtlas",
+        "DEPRIMAP",
+        "URBE Latem",
+        "Other: ______",
+    ]
+
+    SEC8_OUTPUT_TYPE_OPTIONS = [
+        "Dataset",
+        "Code / App / Tool",
+        "Document",
+        "Academic Paper",
+        "Other: ________",
+    ]
+
+    SEC8_DATA_TYPE_OPTIONS = [
+        "Spatial (eg shapefile)",
+        "Qualitative (eg audio recording)",
+        "Quantitative (eg survey results)",
+    ]
+
+    # ---------- Google Sheets ----------
+    def _ws_outputs():
+        return _open_or_create_worksheet(OUTPUTS_SHEET_NAME, SEC8_HEADERS)
+
+    def ensure_output_headers():
+        ws, err = _ws_outputs()
+        if err or ws is None:
+            return False, err or "Outputs worksheet unavailable."
+        try:
+            header = ws.row_values(1)
+            header = [h.strip() for h in header] if header else []
+            missing = [h for h in SEC8_HEADERS if h not in header]
+            if missing:
+                ws.update('A1', [header + missing])
+            return True, "Outputs header OK."
+        except Exception as e:
+            return False, f"Failed to adjust outputs header: {e}"
+
+    @st.cache_data(show_spinner=False)
+    def load_approved_outputs():
+        ws, err = _ws_outputs()
+        if err or ws is None:
+            return pd.DataFrame(), False, err
+        try:
+            rows = ws.get_all_records()
+            df = pd.DataFrame(rows)
+            if df.empty:
+                for c in SEC8_HEADERS:
+                    if c not in df.columns:
+                        df[c] = ""
+                return df, True, None
+            for c in SEC8_HEADERS:
+                if c not in df.columns:
+                    df[c] = ""
+            # somente aprovados na visão pública
+            df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
+            return df, True, None
+        except Exception as e:
+            return pd.DataFrame(), False, f"Error reading outputs: {e}"
+
+    def append_output_to_sheet(payload: dict) -> tuple[bool, str]:
+        ws, err = _ws_outputs()
+        if err or ws is None:
+            return False, err
+        try:
+            ensure_output_headers()
+            row = {
+                "project": payload.get("project",""),
+                "output_title": payload.get("output_title",""),
+                "output_type": payload.get("output_type",""),
+                "output_data_type": payload.get("output_data_type",""),
+                "output_url": payload.get("output_url",""),
+                "output_country": payload.get("output_country",""),
+                "output_city": payload.get("output_city",""),
+                "output_year": payload.get("output_year",""),
+                "output_desc": payload.get("output_desc",""),
+                "output_contact": payload.get("output_contact",""),
+                "output_email": payload.get("output_email",""),
+                "project_url": payload.get("project_url",""),
+                "submitter_email": payload.get("submitter_email",""),
+                "is_edit": "TRUE" if payload.get("is_edit") else "FALSE",
+                "edit_target": payload.get("edit_target",""),
+                "edit_request": payload.get("edit_request",""),
+                "approved": "FALSE",
+                "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            }
+            header = ws.row_values(1)
+            values = [row.get(col, "") for col in header] if header else list(row.values())
+            ws.append_row(values, value_input_option="RAW")
+            return True, "Saved output to Google Sheets."
+        except Exception as e:
+            return False, f"Write error: {e}"
+
+    return {
+        "HEADERS": SEC8_HEADERS,
+        "PROJECT_OPTIONS": SEC8_PROJECT_OPTIONS,
+        "OUTPUT_TYPE_OPTIONS": SEC8_OUTPUT_TYPE_OPTIONS,
+        "DATA_TYPE_OPTIONS": SEC8_DATA_TYPE_OPTIONS,
+        "load_approved_outputs": load_approved_outputs,
+        "append_output_to_sheet": append_output_to_sheet,
+    }
+# =============================================================================
+# 9) OUTPUTS — UI (Background/CTA + Browse + Add/Edit + Deletion) (NOVA)
+# =============================================================================
+def section_9_outputs_ui(
+    st,
+    COUNTRY_CENTER_FULL,
+    try_send_email_via_emailjs,
+    _open_or_create_worksheet,
+    datetime,
+    pd,
+):
+    # Garante helpers da seção 8 (uma única instância)
+    sec8 = section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd)
+
+    # ---------- Background + Call to Action (somente desta seção) ----------
+    st.markdown(
+        """
+        <div style="border:1px solid #334155;background:#0b1220;border-radius:14px;padding:16px; margin-bottom:10px;">
+          <div style="color:#e2e8f0; font-weight:700; font-size:1.05rem; margin-bottom:6px;">Background</div>
+          <div style="color:#cbd5e1; line-height:1.5;">
+            The IDEAMAPS Network brings together diverse “slum” mapping traditions to co-produce new ways of understanding and addressing urban inequalities.
+            Network projects connect data scientists, communities, local governments, and other stakeholders through feedback loops that produce routine, accurate,
+            and comparable citywide maps of area deprivations and assets. These outputs support upgrading, advocacy, monitoring, and other efforts to improve
+            urban conditions.
+            <br><br>
+            This form gathers information on datasets, code, apps, training materials, community profiles, policy briefs, academic papers, and other outputs
+            from IDEAMAPS and related projects. The resulting inventory will help members identify existing resources, strengthen collaboration, and develop
+            new analyses and initiatives that build on the Network’s collective work.
+            <br><br>
+            <b>Call to Action:</b> If you or your team have produced relevant data, tools, or materials, please share them here. Your contributions will expand the Network’s
+            shared evidence base and create new opportunities for collaboration.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown("### Outputs (beta)")
+
+    # ---------- Browse Existing Entries ----------
+    st.subheader("Browse existing entries")
+    df_outputs, ok, err = sec8["load_approved_outputs"]()
+    if not ok:
+        st.caption(f"⚠️ {err or 'Could not load outputs.'}")
+        df_outputs = pd.DataFrame()
+
+    # Tabela com colunas na ordem pedida
+    order_cols = ["project","output_country","output_city","output_type","output_data_type","output_desc"]
+    if df_outputs.empty:
+        st.info("No outputs to display yet.")
+        table_df = pd.DataFrame(columns=order_cols)
+    else:
+        # garante colunas
+        for c in order_cols:
+            if c not in df_outputs.columns:
+                df_outputs[c] = ""
+        table_df = df_outputs.copy()
+
+    # chave humana para seleção
+    def _mk_output_key(row: pd.Series) -> str:
+        return " || ".join([
+            str(row.get("project","")).strip() or "(no project)",
+            str(row.get("output_title","")).strip() or "(no title)",
+            str(row.get("output_country","")).strip() or "—",
+            str(row.get("output_city","")).strip() or "—",
+        ])
+
+    if not table_df.empty:
+        table_df["__key__"] = table_df.apply(_mk_output_key, axis=1)
+        st.dataframe(
+            table_df[order_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+        options_out = table_df["__key__"].tolist()
+    else:
+        options_out = []
+
+    selected_key_out = st.selectbox(
+        "Select a row to edit or delete (loads into the submission form below)",
+        options=[""] + options_out,
+        index=0
+    )
+
+    colx, coly = st.columns([1, 1])
+
+    if selected_key_out and not table_df.empty:
+        picked = table_df[table_df["__key__"] == selected_key_out]
+    else:
+        picked = pd.DataFrame()
+
+    # Estado isolado desta seção
+    if "_OUT_edit_mode" not in st.session_state:
+        st.session_state["_OUT_edit_mode"] = False
+    if "_OUT_before" not in st.session_state:
+        st.session_state["_OUT_before"] = {}
+
+    with colx:
+        if selected_key_out and not picked.empty and st.button("✎ Edit this output", use_container_width=True):
+            sel = picked.iloc[0].to_dict()
+            # guarda linha original para diff
+            st.session_state["_OUT_edit_mode"] = True
+            st.session_state["_OUT_before"] = sel
+            # prefill
+            st.session_state["OUT_pref_project"] = sel.get("project","")
+            st.session_state["OUT_pref_title"] = sel.get("output_title","")
+            st.session_state["OUT_pref_type"] = sel.get("output_type","")
+            st.session_state["OUT_pref_dtype"] = sel.get("output_data_type","")
+            st.session_state["OUT_pref_url"] = sel.get("output_url","")
+            st.session_state["OUT_pref_country"] = sel.get("output_country","")
+            st.session_state["OUT_pref_city"] = sel.get("output_city","")
+            st.session_state["OUT_pref_year"] = sel.get("output_year","")
+            st.session_state["OUT_pref_desc"] = sel.get("output_desc","")
+            st.session_state["OUT_pref_contact"] = sel.get("output_contact","")
+            st.session_state["OUT_pref_email"] = sel.get("output_email","")
+            st.session_state["OUT_pref_project_url"] = sel.get("project_url","")
+            st.info("Loaded into the submission form below. Make your changes and submit to queue an **edit**.")
+            st.rerun()
+
+    with coly:
+        if selected_key_out and not picked.empty and st.button("🗑 Request deletion (output)", use_container_width=True, type="secondary"):
+            st.session_state["_OUT_delete_key"] = selected_key_out
+
+    # Deletion request modal
+    if st.session_state.get("_OUT_delete_key"):
+        st.markdown("### 🗑 Request deletion (output)")
+        st.warning(f"You are requesting deletion of: `{st.session_state['_OUT_delete_key']}`")
+        target_sel = table_df[table_df["__key__"] == st.session_state["_OUT_delete_key"]]
+        if target_sel.empty:
+            st.error("Selected row not found anymore. Please refresh.")
+        else:
+            full_row = target_sel.iloc[0].to_dict()
+            del_reason = st.text_area("Please describe the reason for deletion", placeholder="Explain why this output should be removed.")
+            del_email = st.text_input("Your email (required for follow-up)", key="OUT_del_email", placeholder="name@org.org")
+            c1, c2 = st.columns([1, 4])
+            with c1:
+                confirm = st.button("Confirm deletion request", type="primary", key="OUT_confirm_del")
+            with c2:
+                cancel  = st.button("Cancel", key="OUT_cancel_del")
+            if cancel:
+                st.session_state.pop("_OUT_delete_key", None)
+                st.rerun()
+            if confirm:
+                if not del_email.strip():
+                    st.error("Please provide your email.")
+                elif not del_reason.strip():
+                    st.error("Please provide a reason for deletion.")
+                else:
+                    payload = {
+                        "project": full_row.get("project",""),
+                        "output_title": full_row.get("output_title",""),
+                        "output_type": full_row.get("output_type",""),
+                        "output_data_type": full_row.get("output_data_type",""),
+                        "output_url": full_row.get("output_url",""),
+                        "output_country": full_row.get("output_country",""),
+                        "output_city": full_row.get("output_city",""),
+                        "output_year": full_row.get("output_year",""),
+                        "output_desc": full_row.get("output_desc",""),
+                        "output_contact": full_row.get("output_contact",""),
+                        "output_email": full_row.get("output_email",""),
+                        "project_url": full_row.get("project_url",""),
+                        "submitter_email": del_email.strip(),
+                        "is_edit": True,
+                        "edit_target": str(full_row.get("output_title","")),
+                        "edit_request": f"Request deletion — {del_reason.strip()}",
+                    }
+                    ok_sheet, msg_sheet = sec8["append_output_to_sheet"](payload)
+                    if ok_sheet:
+                        # email silencioso
+                        try_send_email_via_emailjs({
+                            "project_name": payload["project"],
+                            "entries": f"{payload['output_country']} — {payload['output_city']}",
+                            "status": "",
+                            "years": payload.get("output_year",""),
+                            "url": payload.get("output_url",""),
+                            "submitter_email": payload["submitter_email"],
+                            "is_edit": "yes",
+                            "edit_target": payload["edit_target"],
+                            "edit_request": payload["edit_request"],
+                        })
+                        st.success("✅ Deletion request submitted for review.")
+                        st.session_state.pop("_OUT_delete_key", None)
+                        sec8["load_approved_outputs"].clear()
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ Failed to record deletion request: {msg_sheet}")
+
+    st.markdown("---")
+    st.subheader("Add / Edit Entry (goes to review queue)")
+
+    # Países: "Global" primeiro (independente da seção 6)
+    def _countries_with_global_first(mapping: dict):
+        names = list(mapping.keys())
+        if "Global" in names:
+            return ["Global"] + sorted([n for n in names if n != "Global"])
+        else:
+            return ["Global"] + sorted(names)
+
+    countries_options = _countries_with_global_first(COUNTRY_CENTER_FULL)
+
+    with st.form("OUT_form", clear_on_submit=False):
+        if st.session_state.get("_OUT_edit_mode"):
+            st.markdown("🟦 **Editing an existing output** — this will queue an **edit** for review.")
+
+        project_sel = st.selectbox(
+            "Project Name",
+            options=sec8["PROJECT_OPTIONS"],
+            index=sec8["PROJECT_OPTIONS"].index(st.session_state.get("OUT_pref_project","IDEAMAPS Networking Grant"))
+                  if st.session_state.get("OUT_pref_project") in sec8["PROJECT_OPTIONS"] else 0
+        )
+
+        output_title = st.text_input("Output Name", value=st.session_state.get("OUT_pref_title",""))
+
+        output_type = st.selectbox(
+            "Output Type",
+            options=sec8["OUTPUT_TYPE_OPTIONS"],
+            index=sec8["OUTPUT_TYPE_OPTIONS"].index(st.session_state.get("OUT_pref_type","Dataset"))
+                  if st.session_state.get("OUT_pref_type") in sec8["OUTPUT_TYPE_OPTIONS"] else 0
+        )
+
+        if output_type == "Dataset":
+            output_data_type = st.selectbox(
+                "Data type",
+                options=sec8["DATA_TYPE_OPTIONS"],
+                index=sec8["DATA_TYPE_OPTIONS"].index(st.session_state.get("OUT_pref_dtype","Spatial (eg shapefile)"))
+                      if st.session_state.get("OUT_pref_dtype") in sec8["DATA_TYPE_OPTIONS"] else 0
+            )
+        else:
+            output_data_type = ""
+
+        output_url = st.text_input("Output URL (optional)", value=st.session_state.get("OUT_pref_url",""))
+
+        output_country = st.selectbox(
+            "Geographic coverage of output",
+            options=countries_options,
+            index=countries_options.index(st.session_state.get("OUT_pref_country","Global"))
+                  if st.session_state.get("OUT_pref_country") in countries_options else 0
+        )
+
+        output_city = st.text_input(
+            "",
+            placeholder="City (optional — follows formatting of the current 'Cities covered' question)",
+            value=st.session_state.get("OUT_pref_city","")
+        )
+
+        output_year = st.text_input("Year of output release", value=st.session_state.get("OUT_pref_year",""))
+        output_desc = st.text_area("Short description of output", value=st.session_state.get("OUT_pref_desc",""))
+        output_contact = st.text_input("Name & institution of person responsible", value=st.session_state.get("OUT_pref_contact",""))
+        output_email = st.text_input("Email of person responsible", value=st.session_state.get("OUT_pref_email",""))
+        project_url = st.text_input("Project URL (optional)", value=st.session_state.get("OUT_pref_project_url",""))
+
+        submitter_email_outputs = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
+
+        submitted_output = st.form_submit_button("Submit output for review")
+
+    def _summarize_output_changes(before: dict, after: dict) -> str:
+        cols = [
+            "project","output_title","output_type","output_data_type","output_url",
+            "output_country","output_city","output_year","output_desc",
+            "output_contact","output_email","project_url"
+        ]
+        changes = []
+        for c in cols:
+            if str(before.get(c,"")) != str(after.get(c,"")):
+                bv = str(before.get(c,""))
+                av = str(after.get(c,""))
+                if len(bv) > 120: bv = bv[:117]+"…"
+                if len(av) > 120: av = av[:117]+"…"
+                changes.append(f"{c}: '{bv}' → '{av}'")
+        return "; ".join(changes) if changes else "No visible change"
+
+    if submitted_output:
+        if not submitter_email_outputs.strip():
+            st.warning("Please provide the submitter email.")
+        elif not output_title.strip():
+            st.warning("Please provide the Output Name.")
+        else:
+            after_payload = {
+                "project": project_sel,
+                "output_title": output_title,
+                "output_type": output_type,
+                "output_data_type": output_data_type,
+                "output_url": output_url,
+                "output_country": output_country,
+                "output_city": output_city,
+                "output_year": output_year,
+                "output_desc": output_desc,
+                "output_contact": output_contact,
+                "output_email": output_email,
+                "project_url": project_url,
+                "submitter_email": submitter_email_outputs,
+            }
+            if st.session_state.get("_OUT_edit_mode"):
+                before = st.session_state.get("_OUT_before", {})
+                edit_target = before.get("output_title", output_title)
+                edit_request = _summarize_output_changes(before, after_payload)
+                payload = {**after_payload, "is_edit": True, "edit_target": edit_target, "edit_request": edit_request}
+            else:
+                payload = {**after_payload, "is_edit": False, "edit_target": "", "edit_request": "New output submission"}
+
+            ok_sheet, msg_sheet = sec8["append_output_to_sheet"](payload)
+            if ok_sheet:
+                st.success("✅ Output submission saved to review queue.")
+                st.session_state["_OUT_edit_mode"] = False
+                st.session_state["_OUT_before"] = {}
+                # email silencioso
+                try_send_email_via_emailjs({
+                    "project_name": payload["project"],
+                    "entries": f"{payload['output_country']} — {payload['output_city']}",
+                    "status": "",
+                    "years": payload.get("output_year",""),
+                    "url": payload.get("output_url",""),
+                    "submitter_email": payload["submitter_email"],
+                    "is_edit": "yes" if payload["is_edit"] else "no",
+                    "edit_target": payload.get("edit_target",""),
+                })
+                sec8["load_approved_outputs"].clear()
+            else:
+                st.error(f"⚠️ {msg_sheet}")
+
