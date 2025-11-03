@@ -232,28 +232,49 @@ def load_country_centers():
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
 # =============================================================================
-# 3) HEADER COM LOGO
+# 3) HEADER COM LOGO  — agora com o Background no lugar do subtítulo
 # =============================================================================
 header_html = f"""
 <div style="
-  display:flex; align-items:center; gap:16px;
+  display:flex; align-items:flex-start; gap:16px;
   background: linear-gradient(90deg,#0f172a,#1e293b,#0f172a);
   border:1px solid #334155; border-radius:14px;
-  padding:14px 16px; margin-bottom:14px;
+  padding:16px; margin-bottom:16px;
 ">
   <div style="
-    width:44px; height:44px; border-radius:10px; overflow:hidden;
+    width:56px; height:56px; border-radius:12px; overflow:hidden;
     background:#0b1220; display:flex; align-items:center; justify-content:center;
-    flex:0 0 auto;
+    flex:0 0 auto; border:1px solid #334155;
   ">
     {"<img src='data:image/png;base64," + _logo_b64 + "' style='width:100%;height:100%;object-fit:cover;'/>" if _logo_b64 else "🌍"}
   </div>
-  <div style="display:flex; flex-direction:column;">
-    <div style="color:#fff; font-weight:700; font-size:1.2rem;">
+
+  <div style="display:flex; flex-direction:column; gap:6px;">
+    <div style="color:#fff; font-weight:700; font-size:1.25rem; line-height:1.2;">
       IDEAMAPS Global Metadata Explorer
     </div>
-    <div style="color:#94a3b8; font-size:0.90rem; line-height:1.3; margin-top:2px;">
-      Living catalogue of projects and datasets (spatial / quantitative / qualitative) produced by the IDEAMAPS network and partners.
+
+    <div style="color:#cbd5e1; font-size:0.95rem; line-height:1.55;">
+      <p style="margin:0 0 8px 0;">
+        The IDEAMAPS Network brings together diverse “slum” mapping traditions to co-produce
+        new ways of understanding and addressing urban inequalities. Network projects connect
+        data scientists, communities, local governments, and other stakeholders through
+        feedback loops that produce routine, accurate, and comparable citywide maps of area
+        deprivations and assets. These outputs support upgrading, advocacy, monitoring, and
+        other efforts to improve urban conditions.
+      </p>
+      <p style="margin:0 0 8px 0;">
+        This form gathers information on datasets, code, apps, training materials, community
+        profiles, policy briefs, academic papers, and other outputs from IDEAMAPS and related
+        projects. The resulting inventory will help members identify existing resources,
+        strengthen collaboration, and develop new analyses and initiatives that build on the
+        Network’s collective work.
+      </p>
+      <p style="margin:0;">
+        <b>Call to Action:</b> If you or your team have produced relevant data, tools, or materials, please
+        share them here. Your contributions will expand the Network’s shared evidence base and
+        create new opportunities for collaboration.
+      </p>
     </div>
   </div>
 </div>
@@ -262,6 +283,7 @@ st.markdown(header_html, unsafe_allow_html=True)
 
 if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
+
 
 # =============================================================================
 # 4) CARREGA PROJETOS APROVADOS + MAPA
@@ -1011,7 +1033,7 @@ def section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd):
     }
 
 # =============================================================================
-# 9) OUTPUTS — UI (Background/CTA + Browse + Add/Edit + Deletion) (NOVA)
+# 9) OUTPUTS — UI (Browse + Add/Edit + Deletion) — sem Background aqui
 # =============================================================================
 def section_9_outputs_ui(
     st,
@@ -1021,31 +1043,8 @@ def section_9_outputs_ui(
     datetime,
     pd,
 ):
-    # Garante helpers da seção 8 (uma única instância)
+    # Helpers/Sheets da Seção 8
     sec8 = section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd)
-
-    # ---------- Background + Call to Action ----------
-    st.markdown(
-        """
-        <div style="border:1px solid #334155;background:#0b1220;border-radius:14px;padding:16px; margin-bottom:10px;">
-          <div style="color:#e2e8f0; font-weight:700; font-size:1.05rem; margin-bottom:6px;">Background</div>
-          <div style="color:#cbd5e1; line-height:1.5;">
-            The IDEAMAPS Network brings together diverse “slum” mapping traditions to co-produce new ways of understanding and addressing urban inequalities.
-            Network projects connect data scientists, communities, local governments, and other stakeholders through feedback loops that produce routine, accurate,
-            and comparable citywide maps of area deprivations and assets. These outputs support upgrading, advocacy, monitoring, and other efforts to improve
-            urban conditions.
-            <br><br>
-            This form gathers information on datasets, code, apps, training materials, community profiles, policy briefs, academic papers, and other outputs
-            from IDEAMAPS and related projects. The resulting inventory will help members identify existing resources, strengthen collaboration, and develop
-            new analyses and initiatives that build on the Network’s collective work.
-            <br><br>
-            <b>Call to Action:</b> If you or your team have produced relevant data, tools, or materials, please share them here. Your contributions will expand the Network’s
-            shared evidence base and create new opportunities for collaboration.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
 
     st.markdown("### Outputs (beta)")
 
@@ -1056,8 +1055,9 @@ def section_9_outputs_ui(
         st.caption(f"⚠️ {err or 'Could not load outputs.'}")
         df_outputs = pd.DataFrame()
 
-    # Tabela com colunas na ordem pedida
+    # Ordem pedida
     order_cols = ["project","output_country","output_city","output_type","output_data_type","output_desc"]
+
     if df_outputs.empty:
         st.info("No outputs to display yet.")
         table_df = pd.DataFrame(columns=order_cols)
@@ -1094,11 +1094,7 @@ def section_9_outputs_ui(
     )
 
     colx, coly = st.columns([1, 1])
-
-    if selected_key_out and not table_df.empty:
-        picked = table_df[table_df["__key__"] == selected_key_out]
-    else:
-        picked = pd.DataFrame()
+    picked = table_df[table_df["__key__"] == selected_key_out] if (selected_key_out and not table_df.empty) else pd.DataFrame()
 
     # Estado isolado desta seção
     if "_OUT_edit_mode" not in st.session_state:
@@ -1111,7 +1107,7 @@ def section_9_outputs_ui(
             sel = picked.iloc[0].to_dict()
             st.session_state["_OUT_edit_mode"] = True
             st.session_state["_OUT_before"] = sel
-            # prefill
+            # Prefill
             st.session_state["OUT_pref_project"] = sel.get("project","")
             st.session_state["OUT_pref_title"] = sel.get("output_title","")
             st.session_state["OUT_pref_type"] = sel.get("output_type","")
@@ -1211,6 +1207,7 @@ def section_9_outputs_ui(
         if st.session_state.get("_OUT_edit_mode"):
             st.markdown("🟦 **Editing an existing output** — this will queue an **edit** for review.")
 
+        # project (dropdown) — lista fixa
         project_sel = st.selectbox(
             "Project Name",
             options=sec8["PROJECT_OPTIONS"],
@@ -1218,8 +1215,10 @@ def section_9_outputs_ui(
                   if st.session_state.get("OUT_pref_project") in sec8["PROJECT_OPTIONS"] else 0
         )
 
+        # output_title
         output_title = st.text_input("Output Name", value=st.session_state.get("OUT_pref_title",""))
 
+        # output_type (dropdown)
         output_type = st.selectbox(
             "Output Type",
             options=sec8["OUTPUT_TYPE_OPTIONS"],
@@ -1227,6 +1226,7 @@ def section_9_outputs_ui(
                   if st.session_state.get("OUT_pref_type") in sec8["OUTPUT_TYPE_OPTIONS"] else 0
         )
 
+        # Condicional: output_data_type
         if output_type == "Dataset":
             output_data_type = st.selectbox(
                 "Data type",
@@ -1237,8 +1237,10 @@ def section_9_outputs_ui(
         else:
             output_data_type = ""
 
+        # output_url
         output_url = st.text_input("Output URL (optional)", value=st.session_state.get("OUT_pref_url",""))
 
+        # output_country (dropdown) — começa com Global
         output_country = st.selectbox(
             "Geographic coverage of output",
             options=countries_options,
@@ -1246,22 +1248,28 @@ def section_9_outputs_ui(
                   if st.session_state.get("OUT_pref_country") in countries_options else 0
         )
 
+        # output_city (rótulo vazio conforme especificação)
         output_city = st.text_input(
             "",
             placeholder="City (optional — follows formatting of the current 'Cities covered' question)",
             value=st.session_state.get("OUT_pref_city","")
         )
 
+        # Demais campos (labels conforme tabela)
         output_year = st.text_input("Year of output release", value=st.session_state.get("OUT_pref_year",""))
         output_desc = st.text_area("Short description of output", value=st.session_state.get("OUT_pref_desc",""))
         output_contact = st.text_input("Name & institution of person responsible", value=st.session_state.get("OUT_pref_contact",""))
         output_email = st.text_input("Email of person responsible", value=st.session_state.get("OUT_pref_email",""))
+
+        # project_url
         project_url = st.text_input("Project URL (optional)", value=st.session_state.get("OUT_pref_project_url",""))
 
+        # email do remetente (submitter)
         submitter_email_outputs = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
 
         submitted_output = st.form_submit_button("Submit output for review")
 
+    # Diff para edits
     def _summarize_output_changes(before: dict, after: dict) -> str:
         cols = [
             "project","output_title","output_type","output_data_type","output_url",
@@ -1304,27 +1312,7 @@ def section_9_outputs_ui(
                 edit_target = before.get("output_title", output_title)
                 edit_request = _summarize_output_changes(before, after_payload)
                 payload = {**after_payload, "is_edit": True, "edit_target": edit_target, "edit_request": edit_request}
-            else:
-                payload = {**after_payload, "is_edit": False, "edit_target": "", "edit_request": "New output submission"}
 
-            ok_sheet, msg_sheet = sec8["append_output_to_sheet"](payload)
-            if ok_sheet:
-                st.success("✅ Output submission saved to review queue.")
-                st.session_state["_OUT_edit_mode"] = False
-                st.session_state["_OUT_before"] = {}
-                try_send_email_via_emailjs({
-                    "project_name": payload["project"],
-                    "entries": f"{payload['output_country']} — {payload['output_city']}",
-                    "status": "",
-                    "years": payload.get("output_year",""),
-                    "url": payload.get("output_url",""),
-                    "submitter_email": payload["submitter_email"],
-                    "is_edit": "yes" if payload["is_edit"] else "no",
-                    "edit_target": payload.get("edit_target",""),
-                })
-                sec8["load_approved_outputs"].clear()
-            else:
-                st.error(f"⚠️ {msg_sheet}")
 
 # =============================================================================
 # 10) RENDERIZA A NOVA SEÇÃO DE OUTPUTS (CHAMADA EXPLÍCITA)
