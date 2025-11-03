@@ -284,6 +284,45 @@ st.markdown(header_html, unsafe_allow_html=True)
 if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
+# =============================================================================
+# 3.1) BACKGROUND TEXT (logo abaixo do header)
+# =============================================================================
+st.markdown("""
+<div style="
+  border:1px solid #334155;
+  background:#0b1220;
+  border-radius:14px;
+  padding:16px;
+  margin-top:4px;
+  margin-bottom:16px;
+  color:#cbd5e1;
+  line-height:1.55;
+  font-size:0.95rem;
+">
+<p>
+The IDEAMAPS Network brings together diverse “slum” mapping traditions to co-produce
+new ways of understanding and addressing urban inequalities. Network projects connect
+data scientists, communities, local governments, and other stakeholders through
+feedback loops that produce routine, accurate, and comparable citywide maps of area
+deprivations and assets. These outputs support upgrading, advocacy, monitoring, and
+other efforts to improve urban conditions.
+</p>
+<p>
+This form gathers information on datasets, code, apps, training materials, community
+profiles, policy briefs, academic papers, and other outputs from IDEAMAPS and related
+projects. The resulting inventory will help members identify existing resources,
+strengthen collaboration, and develop new analyses and initiatives that build on the
+Network’s collective work.
+</p>
+<p>
+<b>Call to Action:</b> If you or your team have produced relevant data, tools, or materials,
+please share them here. Your contributions will expand the Network’s shared evidence
+base and create new opportunities for collaboration.
+</p>
+</div>
+""", unsafe_allow_html=True)
+
+
 
 # =============================================================================
 # 4) CARREGA PROJETOS APROVADOS + MAPA
