@@ -46,7 +46,7 @@ if _logo_b64:
     )
 
 # =============================================================================
-# 1) CONSTANTES / SHEETS / EMAILJS
+# 1) CONSTANTES / SHEETS / LISTAS
 # =============================================================================
 REQUIRED_HEADERS = [
     "country","city","lat","lon","project_name","years","status",
@@ -58,19 +58,19 @@ REQUIRED_HEADERS = [
 MESSAGES_SHEET_NAME = "Public Messages"
 MESSAGE_HEADERS = ["name","email","message","approved","created_at"]
 
-# OUTPUTS (planilha separada)
 OUTPUTS_SHEET_NAME = st.secrets.get("SHEETS_OUTPUTS_WORKSHEET_NAME", "outputs")
 OUTPUTS_HEADERS = [
     "project",                 # taxonomia (lista fixa + other)
-    "linked_project_name",     # nome exatamente como no catálogo (para vincular)
+    "linked_project_name",     # nome exatamente como no catálogo (vínculo)
     "output_title",
     "output_type",
-    "output_type_other",       # free text quando Other
-    "output_data_type",        # só quando Dataset
+    "output_type_other",
+    "output_data_type",
     "output_url",
     "output_country",
+    "output_country_other",
     "output_city",
-    "output_year",
+    "output_year",             # armazenado como string (ex.: "2004,2007,2026")
     "output_desc",
     "output_contact",
     "output_email",
@@ -435,7 +435,7 @@ else:
 st.markdown("---")
 
 # =============================================================================
-# 7) APPEND helpers (projects/outputs)
+# 7) Append helpers (projects/outputs)
 # =============================================================================
 def append_project_row(payload: dict) -> Tuple[bool, str]:
     ws, err = _ws_projects()
@@ -488,6 +488,7 @@ def append_output_row(payload: dict) -> Tuple[bool, str]:
             "output_data_type": payload.get("output_data_type",""),
             "output_url": payload.get("output_url",""),
             "output_country": payload.get("output_country",""),
+            "output_country_other": payload.get("output_country_other",""),
             "output_city": payload.get("output_city",""),
             "output_year": payload.get("output_year",""),
             "output_desc": payload.get("output_desc",""),
@@ -509,14 +510,11 @@ def append_output_row(payload: dict) -> Tuple[bool, str]:
         return False, f"Write error: {e}"
 
 # =============================================================================
-# 8) FORMULÁRIO ÚNICO (PROJECT or OUTPUT)
+# 8) FORMULÁRIO ÚNICO (Project | Output)
 # =============================================================================
 st.header("Add / Edit Entry (goes to review queue)")
 
-# cache para países no dropdown de Output
-countries_first = _countries_with_global_first(COUNTRY_NAMES)
-
-# 8.1 tipo de entrada (rádio = bolinhas)
+# bolinhas (rádio)
 entry_kind = st.radio(
     "What would you like to add?",
     options=["Project", "Output"],
@@ -525,8 +523,7 @@ entry_kind = st.radio(
     key="entry_kind_radio",
 )
 
-
-# Estado limpo a cada submission
+# estado das cidades
 if "city_list" not in st.session_state:
     st.session_state.city_list = []
 
@@ -534,7 +531,6 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
     submitter_email = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
 
     if entry_kind == "Project":
-        # ---- Campos de Projeto (iguais aos antigos, mas resumidos) ----
         countries_sel = st.multiselect("Implementation countries (one or more)", sorted(COUNTRY_NAMES))
         st.markdown("**Cities covered**")
         colc1, colc2, colc3 = st.columns([2, 2, 1])
@@ -617,13 +613,14 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                     st.error(f"⚠️ Some rows failed: {msg_any}")
 
     else:  # Output
-        # Primeiro, vínculo com projeto existente OU criar novo projeto
+        # ----- vínculo com projeto -----
         st.markdown("**Link to existing project or add a new one**")
         existing_names = sorted(list({str(x).strip() for x in df_projects["project_name"].dropna().tolist()})) if not df_projects.empty else []
         choice = st.radio(
             "How do you want to link the output?",
             ["Select existing project", "➕ Add new project (and link to it)"],
-            horizontal=True
+            horizontal=True,
+            key="out_link_choice"
         )
 
         linked_project_name = ""
@@ -634,21 +631,30 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                 "Existing project (from catalogue)",
                 options=[SELECT_PLACEHOLDER] + existing_names if existing_names else [SELECT_PLACEHOLDER],
                 index=0,
+                key="existing_project_select"
             )
         else:
             st.info("Fill the fields below to add the project this output belongs to:")
-            # Campos mínimos do projeto novo
-            proj_country = st.selectbox("Project country (for location)", options=[SELECT_PLACEHOLDER] + sorted(COUNTRY_NAMES), index=0)
-            proj_city = st.text_input("Project city (optional)")
-            proj_name_free = st.text_input("Project name (free text)", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
-            proj_years = st.text_input("Years (e.g. 2022–2024)")
-            proj_desc = st.text_area("Short description (project)")
-            proj_url = st.text_input("Project URL (optional)")
-            proj_contact = st.text_input("Contact / Responsible institution")
-            proj_access = st.text_input("Access / License / Ethics")
-            # lat/lon a partir do país
+            proj_country = st.selectbox(
+                "Project country (for location)",
+                options=[SELECT_PLACEHOLDER] + sorted(COUNTRY_NAMES),
+                index=0,
+                key="new_proj_country",
+            )
+            proj_city   = st.text_input("Project city (optional)", key="new_proj_city")
+            proj_name_free = st.text_input(
+                "Project name (free text)",
+                placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping",
+                key="new_proj_name",
+            )
+            proj_years  = st.text_input("Years (e.g. 2022–2024)", key="new_proj_years")
+            proj_desc   = st.text_area("Short description (project)", key="new_proj_desc")
+            proj_url    = st.text_input("Project URL (optional)", key="new_proj_url")
+            proj_contact= st.text_input("Contact / Responsible institution", key="new_proj_contact")
+            proj_access = st.text_input("Access / License / Ethics", key="new_proj_access")
             lat, lon = COUNTRY_CENTER_FULL.get(proj_country, (None, None)) if proj_country and proj_country != SELECT_PLACEHOLDER else (None, None)
-            linked_project_name = proj_name_free  # será usado como vínculo
+
+            linked_project_name = proj_name_free
             new_proj_payload = {
                 "country": proj_country if proj_country != SELECT_PLACEHOLDER else "",
                 "city": proj_city, "lat": lat, "lon": lon,
@@ -661,35 +667,65 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
         st.markdown("---")
         st.markdown("**Output details**")
 
-        # Taxonomia de projeto (lista fixa + Other)
+        # Taxonomia de projeto (fixa + Other)
         project_tax_sel = st.selectbox(
             "Project Name (taxonomy)",
             options=PROJECT_TAXONOMY,
-            index=0
+            index=0,
+            key="out_taxonomy"
         )
         project_tax_other = ""
         if project_tax_sel.startswith("Other"):
-            project_tax_other = st.text_input("Please specify the project (taxonomy)")
+            project_tax_other = st.text_input("Please specify the project (taxonomy)", key="out_taxonomy_other")
 
-        output_title = st.text_input("Output Name")
-        output_type_sel = st.selectbox("Output Type", options=OUTPUT_TYPES)
+        # Output Type fixo; "Other" abre campo
+        output_type_sel = st.selectbox(
+            "Output Type",
+            options=OUTPUT_TYPES,
+            index=0,
+            key="out_type"
+        )
         output_type_other = ""
         if output_type_sel.startswith("Other"):
-            output_type_other = st.text_input("Please specify the output type")
+            output_type_other = st.text_input("Please specify the output type", key="out_type_other")
 
+        # Data type apenas se Dataset
         output_data_type = ""
         if output_type_sel == "Dataset":
-            output_data_type = st.selectbox("Data type", options=DATA_TYPES_FOR_DATASET)
+            output_data_type = st.selectbox("Data type", options=DATA_TYPES_FOR_DATASET, key="out_dtype")
 
-        output_url = st.text_input("Output URL (optional)")
-        output_country = st.selectbox("Geographic coverage of output", options=countries_first, index=0)
+        output_title = st.text_input("Output Name", key="out_title")
+        output_url = st.text_input("Output URL (optional)", key="out_url")
+
+        # Geographic coverage fixo: Global + países + Other
+        countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
+        output_country = st.selectbox("Geographic coverage of output", options=countries_fixed, index=0, key="out_country")
+        output_country_other = ""
+        if output_country.startswith("Other"):
+            output_country_other = st.text_input("Please specify the geographic coverage", key="out_country_other")
+
         output_city = st.text_input("",
-            placeholder="City (optional — follows formatting of the current 'Cities covered' question)")
-        output_year = st.text_input("Year of output release")
-        output_desc = st.text_area("Short description of output")
-        output_contact = st.text_input("Name & institution of person responsible")
-        output_email = st.text_input("Email of person responsible")
-        project_url_for_output = st.text_input("Project URL (optional)")
+            placeholder="City (optional — follows formatting of the current 'Cities covered' question)",
+            key="out_city")
+
+        # Year: multiselect 2000–2025 + anos extras
+        base_years = list(range(2000, 2026))
+        years_selected = st.multiselect("Year of output release", base_years, key="out_years_multi")
+        extra_years_raw = st.text_input("Add other years (comma-separated, e.g., 1998, 2026)", key="out_years_extra")
+        extra_years = []
+        if extra_years_raw.strip():
+            for part in extra_years_raw.split(","):
+                s = part.strip()
+                if s.isdigit():
+                    extra_years.append(int(s))
+        # monta string final sem duplicatas
+        final_years = sorted(set(years_selected + extra_years))
+        final_years_str = ",".join(str(y) for y in final_years) if final_years else ""
+
+        output_desc = st.text_area("Short description of output", key="out_desc")
+        output_contact = st.text_input("Name & institution of person responsible", key="out_contact")
+        output_email = st.text_input("Email of person responsible", key="out_email")
+        project_url_for_output = st.text_input("Project URL (optional)", key="out_proj_url")
 
         submit_btn = st.form_submit_button("Submit for review")
 
@@ -706,7 +742,6 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
             elif choice != "Select existing project" and not new_proj_payload.get("project_name","").strip():
                 st.warning("Please provide the new project name.")
             else:
-                # Se escolheu novo projeto: grava fila de revisão
                 created_project_ok = True
                 if choice != "Select existing project":
                     created_project_ok, msgp = append_project_row(new_proj_payload)
@@ -714,7 +749,6 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         st.error(f"⚠️ Could not queue the new project: {msgp}")
 
                 if created_project_ok:
-                    # Monta payload de OUTPUT
                     payload_out = {
                         "project": (project_tax_other.strip() if project_tax_sel.startswith("Other") else project_tax_sel),
                         "linked_project_name": linked_project_name,
@@ -723,9 +757,10 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         "output_type_other": output_type_other if output_type_sel.startswith("Other") else "",
                         "output_data_type": output_data_type if output_type_sel == "Dataset" else "",
                         "output_url": output_url,
-                        "output_country": output_country,
+                        "output_country": output_country if not output_country.startswith("Other") else "",
+                        "output_country_other": output_country_other if output_country.startswith("Other") else "",
                         "output_city": output_city,
-                        "output_year": output_year,
+                        "output_year": final_years_str,
                         "output_desc": output_desc,
                         "output_contact": output_contact,
                         "output_email": output_email,
@@ -738,14 +773,11 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         st.success("✅ Output submission saved to review queue.")
                         try_send_email_via_emailjs({
                             "project_name": payload_out["linked_project_name"],
-                            "entries": f"{payload_out['output_country']} — {payload_out.get('output_city','')}",
-                            "status": "",
+                            "entries": f"{(payload_out['output_country'] or payload_out['output_country_other'])} — {payload_out.get('output_city','')}",
                             "years": payload_out.get("output_year",""),
                             "url": payload_out.get("output_url",""),
                             "submitter_email": payload_out["submitter_email"],
                             "is_edit": "no",
-                            "edit_target": "",
-                            "edit_request": "",
                         })
                         st.markdown("**Submission preview:**")
                         st.code(payload_out, language="python")
@@ -753,7 +785,7 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         st.error(f"⚠️ Failed to save output: {msg_out}")
 
 # =============================================================================
-# 9) COMMUNITY MESSAGE BOARD (igual)
+# 9) COMMUNITY MESSAGE BOARD
 # =============================================================================
 st.markdown("---")
 st.header("Community message board")
