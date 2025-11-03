@@ -322,8 +322,6 @@ base and create new opportunities for collaboration.
 </div>
 """, unsafe_allow_html=True)
 
-
-
 # =============================================================================
 # 4) CARREGA PROJETOS APROVADOS + MAPA
 # =============================================================================
@@ -1351,11 +1349,41 @@ def section_9_outputs_ui(
                 edit_target = before.get("output_title", output_title)
                 edit_request = _summarize_output_changes(before, after_payload)
                 payload = {**after_payload, "is_edit": True, "edit_target": edit_target, "edit_request": edit_request}
+            else:
+                payload = {**after_payload, "is_edit": False, "edit_target": "", "edit_request": "New output submission"}
 
+            ok_sheet, msg_sheet = sec8["append_output_to_sheet"](payload)
+
+            if ok_sheet:
+                st.success("✅ Output submission saved to review queue.")
+                # E-mail opcional
+                try_send_email_via_emailjs({
+                    "project_name": payload["project"],
+                    "entries": f"{payload['output_country']} — {payload.get('output_city','')}",
+                    "status": "",
+                    "years": payload.get("output_year",""),
+                    "url": payload.get("output_url",""),
+                    "submitter_email": payload["submitter_email"],
+                    "is_edit": "yes" if payload["is_edit"] else "no",
+                    "edit_target": payload.get("edit_target",""),
+                    "edit_request": payload.get("edit_request",""),
+                })
+                # Reset estados de edição
+                st.session_state["_OUT_edit_mode"] = False
+                st.session_state["_OUT_before"] = {}
+                # Limpa os prefills para o próximo envio
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith("OUT_pref_"):
+                        st.session_state[k] = ""
+                # Atualiza tabela
+                sec8["load_approved_outputs"].clear()
+                st.markdown("**Submission preview:**")
+                st.code(payload, language="python")
+            else:
+                st.error(f"⚠️ Failed to save output: {msg_sheet}")
 
 # =============================================================================
 # 10) RENDERIZA A NOVA SEÇÃO DE OUTPUTS (CHAMADA EXPLÍCITA)
-#     >>> esta linha faz a "Outputs (beta)" aparecer no site <<<
 # =============================================================================
 section_9_outputs_ui(
     st=st,
