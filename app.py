@@ -577,7 +577,7 @@ with st.form("add_project_form", clear_on_submit=False):
             disabled=not options_for_city
         )
 
-    # ADD ONE (usa session_state direto)
+    # ADD ONE
     if add_one:
         selected_country = st.session_state.get("country_for_city")
         city_input = st.session_state.get("city_to_add", "").strip()
@@ -963,7 +963,6 @@ def section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd):
             for c in SEC8_HEADERS:
                 if c not in df.columns:
                     df[c] = ""
-            # somente aprovados na visão pública
             df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
             return df, True, None
         except Exception as e:
@@ -1010,6 +1009,7 @@ def section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd):
         "load_approved_outputs": load_approved_outputs,
         "append_output_to_sheet": append_output_to_sheet,
     }
+
 # =============================================================================
 # 9) OUTPUTS — UI (Background/CTA + Browse + Add/Edit + Deletion) (NOVA)
 # =============================================================================
@@ -1024,7 +1024,7 @@ def section_9_outputs_ui(
     # Garante helpers da seção 8 (uma única instância)
     sec8 = section_8_outputs_model(st, _open_or_create_worksheet, datetime, pd)
 
-    # ---------- Background + Call to Action (somente desta seção) ----------
+    # ---------- Background + Call to Action ----------
     st.markdown(
         """
         <div style="border:1px solid #334155;background:#0b1220;border-radius:14px;padding:16px; margin-bottom:10px;">
@@ -1062,7 +1062,6 @@ def section_9_outputs_ui(
         st.info("No outputs to display yet.")
         table_df = pd.DataFrame(columns=order_cols)
     else:
-        # garante colunas
         for c in order_cols:
             if c not in df_outputs.columns:
                 df_outputs[c] = ""
@@ -1110,7 +1109,6 @@ def section_9_outputs_ui(
     with colx:
         if selected_key_out and not picked.empty and st.button("✎ Edit this output", use_container_width=True):
             sel = picked.iloc[0].to_dict()
-            # guarda linha original para diff
             st.session_state["_OUT_edit_mode"] = True
             st.session_state["_OUT_before"] = sel
             # prefill
@@ -1178,7 +1176,6 @@ def section_9_outputs_ui(
                     }
                     ok_sheet, msg_sheet = sec8["append_output_to_sheet"](payload)
                     if ok_sheet:
-                        # email silencioso
                         try_send_email_via_emailjs({
                             "project_name": payload["project"],
                             "entries": f"{payload['output_country']} — {payload['output_city']}",
@@ -1200,7 +1197,7 @@ def section_9_outputs_ui(
     st.markdown("---")
     st.subheader("Add / Edit Entry (goes to review queue)")
 
-    # Países: "Global" primeiro (independente da seção 6)
+    # Países: "Global" primeiro
     def _countries_with_global_first(mapping: dict):
         names = list(mapping.keys())
         if "Global" in names:
@@ -1315,7 +1312,6 @@ def section_9_outputs_ui(
                 st.success("✅ Output submission saved to review queue.")
                 st.session_state["_OUT_edit_mode"] = False
                 st.session_state["_OUT_before"] = {}
-                # email silencioso
                 try_send_email_via_emailjs({
                     "project_name": payload["project"],
                     "entries": f"{payload['output_country']} — {payload['output_city']}",
@@ -1330,3 +1326,15 @@ def section_9_outputs_ui(
             else:
                 st.error(f"⚠️ {msg_sheet}")
 
+# =============================================================================
+# 10) RENDERIZA A NOVA SEÇÃO DE OUTPUTS (CHAMADA EXPLÍCITA)
+#     >>> esta linha faz a "Outputs (beta)" aparecer no site <<<
+# =============================================================================
+section_9_outputs_ui(
+    st=st,
+    COUNTRY_CENTER_FULL=COUNTRY_CENTER_FULL,
+    try_send_email_via_emailjs=try_send_email_via_emailjs,
+    _open_or_create_worksheet=_open_or_create_worksheet,
+    datetime=datetime,
+    pd=pd,
+)
