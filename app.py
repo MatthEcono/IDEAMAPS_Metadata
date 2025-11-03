@@ -70,7 +70,7 @@ OUTPUTS_HEADERS = [
     "output_country",
     "output_country_other",
     "output_city",
-    "output_year",             # armazenado como string (ex.: "2004,2007,2026")
+    "output_year",             # string "2004,2007,2026"
     "output_desc",
     "output_contact",
     "output_email",
@@ -297,7 +297,7 @@ if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # =============================================================================
-# 6) Projects: load + map + browse
+# 6) Projects: load + map + browse (+edit)
 # =============================================================================
 def ensure_project_headers():
     ws, err = _ws_projects()
@@ -374,8 +374,28 @@ def load_approved_projects():
     except Exception as e:
         return pd.DataFrame(), False, f"Error reading projects: {e}"
 
+@st.cache_data(show_spinner=False)
+def load_approved_outputs():
+    ws, err = _ws_outputs()
+    if err or ws is None:
+        return pd.DataFrame(), False, err
+    try:
+        rows = ws.get_all_records()
+        df = pd.DataFrame(rows)
+        if df.empty:
+            for c in OUTPUTS_HEADERS:
+                if c not in df.columns: df[c] = ""
+            return df, True, None
+        for c in OUTPUTS_HEADERS:
+            if c not in df.columns: df[c] = ""
+        df = df[df["approved"].astype(str).str.upper().eq("TRUE")].copy()
+        return df, True, None
+    except Exception as e:
+        return pd.DataFrame(), False, f"Error reading outputs: {e}"
+
 if st.sidebar.button("🔄 Check updates"):
     load_approved_projects.clear()
+    load_approved_outputs.clear()
     load_country_centers.clear()
     ensure_project_headers()
     ensure_outputs_headers()
@@ -430,12 +450,105 @@ if df_projects.empty:
 else:
     show_cols = ["project_name","country","city","years","data_types","contact","access","url","lat","lon"]
     show_cols = [c for c in show_cols if c in df_projects.columns]
-    st.dataframe(df_projects[show_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+    dfp = df_projects[show_cols].copy()
+    st.dataframe(dfp.reset_index(drop=True), use_container_width=True, hide_index=True)
 
+    # ---- EDIT LOAD (projects) ----
+    if "_PROJ_edit_mode" not in st.session_state:
+        st.session_state["_PROJ_edit_mode"] = False
+    if "_PROJ_before" not in st.session_state:
+        st.session_state["_PROJ_before"] = {}
+
+    key_series = df_projects.apply(lambda r: " || ".join([str(r.get("project_name","")).strip() or "(unnamed)",
+                                                          str(r.get("country","")).strip() or "—",
+                                                          str(r.get("city","")).strip() or "—"]), axis=1)
+    options = [""] + key_series.tolist()
+    sel_key = st.selectbox("Select a project row to edit (loads below)", options=options, index=0)
+    if sel_key and st.button("✎ Edit project (prefill form)"):
+        idx = key_series[key_series == sel_key].index[0]
+        sel = df_projects.loc[idx].to_dict()
+        # Prefill Project form
+        st.session_state["entry_kind_radio"] = "Project"
+        st.session_state["_PROJ_edit_mode"] = True
+        st.session_state["_PROJ_before"] = sel
+        # Prefill fields
+        st.session_state["city_list"] = [f"{sel.get('country','')} — {sel.get('city','')}"] if sel.get("country") else []
+        st.session_state["__pref_project_name"] = sel.get("project_name","")
+        st.session_state["__pref_years"] = sel.get("years","")
+        st.session_state["__pref_data_types"] = sel.get("data_types","")
+        st.session_state["__pref_description"] = sel.get("description","")
+        st.session_state["__pref_contact"] = sel.get("contact","")
+        st.session_state["__pref_access"] = sel.get("access","")
+        st.session_state["__pref_url"] = sel.get("url","")
+        st.rerun()
+
+# ---- Browse existing OUTPUTS (+ edit loader) ----
 st.markdown("---")
+st.subheader("Browse existing outputs")
+df_outputs, ok_outs, err_outs = load_approved_outputs()
+if not ok_outs:
+    st.caption(f"⚠️ {err_outs or 'Could not load outputs.'}")
+else:
+    if df_outputs.empty:
+        st.info("No outputs to display yet.")
+    else:
+        cols_show = ["project","linked_project_name","output_title","output_type","output_data_type","output_country","output_city","output_year"]
+        for c in cols_show:
+            if c not in df_outputs.columns:
+                df_outputs[c] = ""
+        dfo = df_outputs[cols_show].copy()
+        st.dataframe(dfo.reset_index(drop=True), use_container_width=True, hide_index=True)
+
+        # state for output edit
+        if "_OUT_edit_mode" not in st.session_state:
+            st.session_state["_OUT_edit_mode"] = False
+        if "_OUT_before" not in st.session_state:
+            st.session_state["_OUT_before"] = {}
+
+        out_key = df_outputs.apply(lambda r: " || ".join([str(r.get("linked_project_name","")).strip() or "(no project)",
+                                                           str(r.get("output_title","")).strip() or "(no title)"]), axis=1)
+        sel_out = st.selectbox("Select an output row to edit (loads below)", options=[""] + out_key.tolist(), index=0)
+        if sel_out and st.button("✎ Edit output (prefill form)"):
+            idx = out_key[out_key == sel_out].index[0]
+            row = df_outputs.loc[idx].to_dict()
+            # set to Output tab and prefill
+            st.session_state["entry_kind_radio"] = "Output"
+            st.session_state["_OUT_edit_mode"] = True
+            st.session_state["_OUT_before"] = row
+            # Prefill output fields
+            st.session_state["existing_project_select"] = row.get("linked_project_name","")
+            st.session_state["out_taxonomy"] = row.get("project","") if row.get("project","") in PROJECT_TAXONOMY else PROJECT_TAXONOMY[-1]
+            st.session_state["out_taxonomy_other"] = "" if st.session_state["out_taxonomy"] != PROJECT_TAXONOMY[-1] else row.get("project","")
+            # Output type
+            ot = row.get("output_type","") if row.get("output_type","") in OUTPUT_TYPES else "Other: ________"
+            st.session_state["out_type"] = ot
+            st.session_state["out_type_other"] = row.get("output_type_other","")
+            st.session_state["out_dtype"] = row.get("output_data_type","") if row.get("output_data_type","") in DATA_TYPES_FOR_DATASET else DATA_TYPES_FOR_DATASET[0]
+            st.session_state["out_title"] = row.get("output_title","")
+            st.session_state["out_url"] = row.get("output_url","")
+            # country (fixed + other)
+            countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
+            oc = row.get("output_country","") if row.get("output_country","") in countries_fixed else "Other: ______"
+            st.session_state["out_country"] = oc
+            st.session_state["out_country_other"] = row.get("output_country_other","")
+            st.session_state["out_city"] = row.get("output_city","")
+            # years
+            try:
+                ys = [int(x) for x in str(row.get("output_year","")).split(",") if x.strip().isdigit()]
+            except Exception:
+                ys = []
+            st.session_state["out_years_multi"] = [y for y in ys if 2000 <= y <= 2025]
+            extra = [y for y in ys if (y < 2000 or y > 2025)]
+            st.session_state["out_years_extra"] = ", ".join(str(y) for y in extra)
+            st.session_state["out_desc"] = row.get("output_desc","")
+            st.session_state["out_contact"] = row.get("output_contact","")
+            st.session_state["out_email"] = row.get("output_email","")
+            st.session_state["out_proj_url"] = row.get("project_url","")
+            st.session_state["out_link_choice"] = "Select existing project"
+            st.rerun()
 
 # =============================================================================
-# 7) Append helpers (projects/outputs)
+# 7) Append helpers (projects/outputs) + diffs
 # =============================================================================
 def append_project_row(payload: dict) -> Tuple[bool, str]:
     ws, err = _ws_projects()
@@ -509,12 +622,22 @@ def append_output_row(payload: dict) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Write error: {e}"
 
+def _diff_str(before: dict, after: dict, cols: List[str]) -> str:
+    out = []
+    for c in cols:
+        b = str(before.get(c,""))
+        a = str(after.get(c,""))
+        if b != a:
+            if len(b) > 120: b = b[:117]+"…"
+            if len(a) > 120: a = a[:117]+"…"
+            out.append(f"{c}: '{b}' → '{a}'")
+    return "; ".join(out) if out else "No visible change"
+
 # =============================================================================
-# 8) FORMULÁRIO ÚNICO (Project | Output)
+# 8) FORMULÁRIO ÚNICO (Project | Output) — com travas na edição
 # =============================================================================
 st.header("Add / Edit Entry (goes to review queue)")
 
-# bolinhas (rádio)
 entry_kind = st.radio(
     "What would you like to add?",
     options=["Project", "Output"],
@@ -523,14 +646,17 @@ entry_kind = st.radio(
     key="entry_kind_radio",
 )
 
-# estado das cidades
 if "city_list" not in st.session_state:
     st.session_state.city_list = []
 
 with st.form("UNIFIED_FORM", clear_on_submit=False):
     submitter_email = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
 
+    # ---------- PROJECT ----------
     if entry_kind == "Project":
+        editing = st.session_state.get("_PROJ_edit_mode", False)
+        before = st.session_state.get("_PROJ_before", {}) if editing else {}
+
         countries_sel = st.multiselect("Implementation countries (one or more)", sorted(COUNTRY_NAMES))
         st.markdown("**Cities covered**")
         colc1, colc2, colc3 = st.columns([2, 2, 1])
@@ -549,16 +675,14 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
             add_city = st.form_submit_button("➕ Add", use_container_width=True, disabled=not countries_sel)
 
         if add_city:
-            if not selected_country_for_city or selected_country_for_city == SELECT_PLACEHOLDER:
-                st.warning("Please select a valid country.")
-            elif not (city_to_add or "").strip():
-                st.warning("Please type a city.")
-            else:
+            if selected_country_for_city and selected_country_for_city != SELECT_PLACEHOLDER and (city_to_add or "").strip():
                 for c in [c.strip() for c in city_to_add.split(",") if c.strip()]:
                     pair = f"{selected_country_for_city} — {c}"
                     if pair not in st.session_state.city_list:
                         st.session_state.city_list.append(pair)
                 st.rerun()
+            else:
+                st.warning("Select a valid country and type a city.")
 
         if st.session_state.city_list:
             st.caption("Cities added:")
@@ -572,13 +696,20 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
             if st.checkbox("Clear all cities"):
                 st.session_state.city_list = []
 
-        project_name = st.text_input("Project name", placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping")
-        years = st.text_input("Years (e.g. 2022–2024)")
-        data_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
-        description = st.text_area("Short description")
-        contact = st.text_input("Contact / Responsible institution")
-        access = st.text_input("Access / License / Ethics")
-        url = st.text_input("Project URL (optional)")
+        project_name = st.text_input("Project name",
+                                     value=st.session_state.get("__pref_project_name",""))
+        years = st.text_input("Years (e.g. 2022–2024)",
+                              value=st.session_state.get("__pref_years",""))
+        data_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)",
+                                  value=st.session_state.get("__pref_data_types",""))
+        description = st.text_area("Short description",
+                                   value=st.session_state.get("__pref_description",""))
+        contact = st.text_input("Contact / Responsible institution",
+                                value=st.session_state.get("__pref_contact",""))
+        access = st.text_input("Access / License / Ethics",
+                               value=st.session_state.get("__pref_access",""))
+        url = st.text_input("Project URL (optional)",
+                            value=st.session_state.get("__pref_url",""))
 
         submit_btn = st.form_submit_button("Submit for review")
 
@@ -601,19 +732,32 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         "project_name": project_name, "years": years, "status": "",
                         "data_types": data_types, "description": description,
                         "contact": contact, "access": access, "url": url,
-                        "submitter_email": submitter_email, "is_edit": False,
-                        "edit_target": "", "edit_request": "New project submission",
+                        "submitter_email": submitter_email,
                     }
+                    if editing:
+                        payload.update({
+                            "is_edit": True,
+                            "edit_target": before.get("project_name", project_name),
+                            "edit_request": _diff_str(before, payload,
+                                ["country","city","lat","lon","project_name","years","status","data_types","description","contact","access","url"])
+                        })
+                    else:
+                        payload.update({"is_edit": False, "edit_target": "", "edit_request": "New project submission"})
                     ok, msg = append_project_row(payload)
                     ok_all &= ok; msg_any = msg
                 if ok_all:
-                    st.success(f"✅ Submission saved ({len(rows)} row(s)).")
+                    st.success(f"✅ {'Edit queued' if editing else 'Submission saved'} ({len(rows)} row(s)).")
                     st.session_state.city_list = []
+                    st.session_state["_PROJ_edit_mode"] = False
+                    st.session_state["_PROJ_before"] = {}
                 else:
                     st.error(f"⚠️ Some rows failed: {msg_any}")
 
-    else:  # Output
-        # ----- vínculo com projeto -----
+    # ---------- OUTPUT ----------
+    else:
+        editing = st.session_state.get("_OUT_edit_mode", False)
+        before = st.session_state.get("_OUT_before", {}) if editing else {}
+
         st.markdown("**Link to existing project or add a new one**")
         existing_names = sorted(list({str(x).strip() for x in df_projects["project_name"].dropna().tolist()})) if not df_projects.empty else []
         choice = st.radio(
@@ -644,6 +788,7 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
             proj_city   = st.text_input("Project city (optional)", key="new_proj_city")
             proj_name_free = st.text_input(
                 "Project name (free text)",
+                value=st.session_state.get("existing_project_select",""),
                 placeholder="e.g., IDEAMAPS Lagos / Urban Deprivation Mapping",
                 key="new_proj_name",
             )
@@ -667,70 +812,92 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
         st.markdown("---")
         st.markdown("**Output details**")
 
-        # Taxonomia de projeto (fixa + Other)
+        # Taxonomia (fixa) — desabilita em edição
         project_tax_sel = st.selectbox(
             "Project Name (taxonomy)",
             options=PROJECT_TAXONOMY,
-            index=0,
+            index=PROJECT_TAXONOMY.index(st.session_state.get("out_taxonomy", PROJECT_TAXONOMY[0]))
+                  if st.session_state.get("out_taxonomy") in PROJECT_TAXONOMY else 0,
+            disabled=editing,  # <- travado na edição
             key="out_taxonomy"
         )
         project_tax_other = ""
-        if project_tax_sel.startswith("Other"):
+        if not editing and project_tax_sel.startswith("Other"):
             project_tax_other = st.text_input("Please specify the project (taxonomy)", key="out_taxonomy_other")
 
-        # Output Type fixo; "Other" abre campo
+        # Output Type (fixo) — desabilita em edição
         output_type_sel = st.selectbox(
             "Output Type",
             options=OUTPUT_TYPES,
-            index=0,
+            index=OUTPUT_TYPES.index(st.session_state.get("out_type", OUTPUT_TYPES[0]))
+                  if st.session_state.get("out_type") in OUTPUT_TYPES else 0,
+            disabled=editing,  # <- travado na edição
             key="out_type"
         )
         output_type_other = ""
-        if output_type_sel.startswith("Other"):
+        if (not editing) and output_type_sel.startswith("Other"):
             output_type_other = st.text_input("Please specify the output type", key="out_type_other")
 
-        # Data type apenas se Dataset
+        # Data type apenas se Dataset (se estiver em edição, só mostra o valor)
         output_data_type = ""
-        if output_type_sel == "Dataset":
-            output_data_type = st.selectbox("Data type", options=DATA_TYPES_FOR_DATASET, key="out_dtype")
+        if (editing and (st.session_state.get("out_type") == "Dataset")) or (not editing and output_type_sel == "Dataset"):
+            output_data_type = st.selectbox(
+                "Data type",
+                options=DATA_TYPES_FOR_DATASET,
+                index=DATA_TYPES_FOR_DATASET.index(st.session_state.get("out_dtype", DATA_TYPES_FOR_DATASET[0]))
+                      if st.session_state.get("out_dtype") in DATA_TYPES_FOR_DATASET else 0,
+                disabled=editing,  # segue a regra de travar durante edição
+                key="out_dtype"
+            )
 
-        output_title = st.text_input("Output Name", key="out_title")
-        output_url = st.text_input("Output URL (optional)", key="out_url")
+        output_title = st.text_input("Output Name", value=st.session_state.get("out_title",""), key="out_title")
+        output_url = st.text_input("Output URL (optional)", value=st.session_state.get("out_url",""), key="out_url")
 
-        # Geographic coverage fixo: Global + países + Other
+        # Geographic coverage fixo (+ Other) — se edição, travado
         countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
-        output_country = st.selectbox("Geographic coverage of output", options=countries_fixed, index=0, key="out_country")
+        output_country = st.selectbox(
+            "Geographic coverage of output",
+            options=countries_fixed,
+            index=countries_fixed.index(st.session_state.get("out_country", countries_fixed[0]))
+                  if st.session_state.get("out_country") in countries_fixed else 0,
+            disabled=editing,  # <- travado na edição
+            key="out_country"
+        )
         output_country_other = ""
-        if output_country.startswith("Other"):
+        if (not editing) and output_country.startswith("Other"):
             output_country_other = st.text_input("Please specify the geographic coverage", key="out_country_other")
 
         output_city = st.text_input("",
             placeholder="City (optional — follows formatting of the current 'Cities covered' question)",
+            value=st.session_state.get("out_city",""),
             key="out_city")
 
-        # Year: multiselect 2000–2025 + anos extras
+        # Years: multiselect + extras (se edição, apenas mostra o multiselect preenchido—editável ok)
         base_years = list(range(2000, 2026))
-        years_selected = st.multiselect("Year of output release", base_years, key="out_years_multi")
-        extra_years_raw = st.text_input("Add other years (comma-separated, e.g., 1998, 2026)", key="out_years_extra")
+        years_selected = st.multiselect("Year of output release",
+                                        base_years,
+                                        default=st.session_state.get("out_years_multi", []),
+                                        key="out_years_multi")
+        extra_years_raw = st.text_input("Add other years (comma-separated, e.g., 1998, 2026)",
+                                        value=st.session_state.get("out_years_extra",""),
+                                        key="out_years_extra")
         extra_years = []
         if extra_years_raw.strip():
             for part in extra_years_raw.split(","):
                 s = part.strip()
                 if s.isdigit():
                     extra_years.append(int(s))
-        # monta string final sem duplicatas
         final_years = sorted(set(years_selected + extra_years))
         final_years_str = ",".join(str(y) for y in final_years) if final_years else ""
 
-        output_desc = st.text_area("Short description of output", key="out_desc")
-        output_contact = st.text_input("Name & institution of person responsible", key="out_contact")
-        output_email = st.text_input("Email of person responsible", key="out_email")
-        project_url_for_output = st.text_input("Project URL (optional)", key="out_proj_url")
+        output_desc = st.text_area("Short description of output", value=st.session_state.get("out_desc",""), key="out_desc")
+        output_contact = st.text_input("Name & institution of person responsible", value=st.session_state.get("out_contact",""), key="out_contact")
+        output_email = st.text_input("Email of person responsible", value=st.session_state.get("out_email",""), key="out_email")
+        project_url_for_output = st.text_input("Project URL (optional)", value=st.session_state.get("out_proj_url",""), key="out_proj_url")
 
         submit_btn = st.form_submit_button("Submit for review")
 
         if submit_btn:
-            # validações
             if not submitter_email.strip():
                 st.warning("Please provide the submitter email.")
             elif not output_title.strip():
@@ -749,16 +916,27 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         st.error(f"⚠️ Could not queue the new project: {msgp}")
 
                 if created_project_ok:
-                    payload_out = {
-                        "project": (project_tax_other.strip() if project_tax_sel.startswith("Other") else project_tax_sel),
+                    proj_tax_val = st.session_state.get("out_taxonomy")
+                    proj_tax_val = (st.session_state.get("out_taxonomy_other","").strip()
+                                    if (not editing) and proj_tax_val.startswith("Other")
+                                    else proj_tax_val)
+
+                    out_type_val = st.session_state.get("out_type")
+                    out_type_other_val = st.session_state.get("out_type_other","") if ((not editing) and out_type_val.startswith("Other")) else ""
+
+                    out_country_val = st.session_state.get("out_country")
+                    out_country_other_val = st.session_state.get("out_country_other","") if ((not editing) and out_country_val.startswith("Other")) else ""
+
+                    after_payload = {
+                        "project": proj_tax_val,
                         "linked_project_name": linked_project_name,
                         "output_title": output_title,
-                        "output_type": output_type_sel if not output_type_sel.startswith("Other") else "",
-                        "output_type_other": output_type_other if output_type_sel.startswith("Other") else "",
-                        "output_data_type": output_data_type if output_type_sel == "Dataset" else "",
+                        "output_type": (out_type_val if not out_type_val.startswith("Other") else ""),
+                        "output_type_other": out_type_other_val if out_type_val.startswith("Other") else "",
+                        "output_data_type": st.session_state.get("out_dtype","") if ((out_type_val == "Dataset") or (editing and st.session_state.get("out_type")=="Dataset")) else "",
                         "output_url": output_url,
-                        "output_country": output_country if not output_country.startswith("Other") else "",
-                        "output_country_other": output_country_other if output_country.startswith("Other") else "",
+                        "output_country": (out_country_val if not out_country_val.startswith("Other") else ""),
+                        "output_country_other": out_country_other_val if out_country_val.startswith("Other") else "",
                         "output_city": output_city,
                         "output_year": final_years_str,
                         "output_desc": output_desc,
@@ -766,21 +944,36 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         "output_email": output_email,
                         "project_url": project_url_for_output,
                         "submitter_email": submitter_email,
-                        "is_edit": False, "edit_target": "", "edit_request": "New output submission",
                     }
+
+                    if editing:
+                        payload_out = {
+                            **after_payload,
+                            "is_edit": True,
+                            "edit_target": before.get("output_title", output_title),
+                            "edit_request": _diff_str(before, after_payload, [
+                                "project","linked_project_name","output_title","output_type","output_type_other",
+                                "output_data_type","output_url","output_country","output_country_other",
+                                "output_city","output_year","output_desc","output_contact","output_email","project_url"
+                            ]),
+                        }
+                    else:
+                        payload_out = {**after_payload, "is_edit": False, "edit_target": "", "edit_request": "New output submission"}
+
                     ok_out, msg_out = append_output_row(payload_out)
                     if ok_out:
-                        st.success("✅ Output submission saved to review queue.")
+                        st.success(f"✅ {'Edit queued' if editing else 'Output submission saved'} to review queue.")
                         try_send_email_via_emailjs({
                             "project_name": payload_out["linked_project_name"],
                             "entries": f"{(payload_out['output_country'] or payload_out['output_country_other'])} — {payload_out.get('output_city','')}",
                             "years": payload_out.get("output_year",""),
                             "url": payload_out.get("output_url",""),
                             "submitter_email": payload_out["submitter_email"],
-                            "is_edit": "no",
+                            "is_edit": "yes" if editing else "no",
                         })
-                        st.markdown("**Submission preview:**")
-                        st.code(payload_out, language="python")
+                        if editing:
+                            st.session_state["_OUT_edit_mode"] = False
+                            st.session_state["_OUT_before"] = {}
                     else:
                         st.error(f"⚠️ Failed to save output: {msg_out}")
 
