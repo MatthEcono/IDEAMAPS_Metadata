@@ -516,12 +516,15 @@ st.header("Add / Edit Entry (goes to review queue)")
 # cache para países no dropdown de Output
 countries_first = _countries_with_global_first(COUNTRY_NAMES)
 
-# 8.1 tipo de entrada
-entry_kind = st.selectbox(
+# 8.1 tipo de entrada (rádio = bolinhas)
+entry_kind = st.radio(
     "What would you like to add?",
-    ["Project", "Output"],
-    index=0
+    options=["Project", "Output"],
+    index=0,
+    horizontal=True,
+    key="entry_kind_radio",
 )
+
 
 # Estado limpo a cada submission
 if "city_list" not in st.session_state:
