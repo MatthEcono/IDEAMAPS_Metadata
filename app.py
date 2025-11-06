@@ -774,44 +774,42 @@ with st.form("output_form", clear_on_submit=False):
             key="new_project_contact_input"
         )
     
-    # Tipo de output
-    output_type_sel = st.selectbox(
-        "Output Type", 
-        options=OUTPUT_TYPES,
-        index=OUTPUT_TYPES.index(form_data["output_type_sel"]),
-        key="output_type_sel_input"
+   # Tipo de output
+output_type_sel = st.selectbox(
+    "Output Type", 
+    options=OUTPUT_TYPES,
+    index=OUTPUT_TYPES.index(form_data["output_type_sel"]) if form_data["output_type_sel"] in OUTPUT_TYPES else 0,
+    key="output_type_sel_input"
+)
+
+# Data type (somente quando for Dataset)
+if output_type_sel == "Dataset":
+    options_dtypes = [SELECT_PLACEHOLDER] + DATASET_DTYPES
+    # tenta recuperar o que já estava no form_data; se não existir, volta para placeholder
+    saved_dtype = form_data.get("output_data_type", SELECT_PLACEHOLDER)
+    current_index = options_dtypes.index(saved_dtype) if saved_dtype in options_dtypes else 0
+
+    st.session_state.output_form_data["output_data_type"] = st.selectbox(
+        "Data type (for datasets) *",
+        options=options_dtypes,
+        index=current_index,
+        key="output_data_type_input"
     )
+else:
+    # garante que não vamos gravar lixo quando não for dataset
+    st.session_state.output_form_data["output_data_type"] = ""
+    # renderiza um input opcional se o usuário escolheu "Other" no tipo de output
+    # (mantém compatibilidade com o restante do fluxo)
     
-    output_data_type = SELECT_PLACEHOLDER
-    if output_type_sel == "Dataset":
-        current_index = 0
-        if form_data["output_data_type"] in [SELECT_PLACEHOLDER] + DATASET_DTYPES:
-            current_index = [SELECT_PLACEHOLDER] + DATASET_DTYPES.index(form_data["output_data_type"])
-        output_data_type = st.selectbox(
-            "Data type (for datasets) *", 
-            options=[SELECT_PLACEHOLDER] + DATASET_DTYPES,
-            index=current_index,
-            key="output_data_type_input"
-        )
-    
-    output_type_other = ""
-    if output_type_sel.startswith("Other"):
-        output_type_other = st.text_input(
-            "Please specify the output type", 
-            value=form_data["output_type_other"],
-            key="output_type_other_input"
-        )
-    
-    output_title = st.text_input(
-        "Output Name *", 
-        value=form_data["output_title"],
-        key="output_title_input"
+# Campo "Other" para Output Type
+output_type_other = ""
+if output_type_sel.startswith("Other"):
+    output_type_other = st.text_input(
+        "Please specify the output type", 
+        value=form_data.get("output_type_other", ""),
+        key="output_type_other_input"
     )
-    output_url = st.text_input(
-        "Output URL (optional)", 
-        value=form_data["output_url"],
-        key="output_url_input"
-    )
+
     
     # Cobertura geográfica
     st.markdown("**Geographic coverage of output**")
