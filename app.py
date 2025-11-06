@@ -58,7 +58,7 @@ PROJECTS_HEADERS = [
     "approved","created_at"
 ]
 
-# Importante: agora outputs também têm lat/lon e output_linkedin
+# outputs têm lat/lon e output_linkedin
 OUTPUTS_HEADERS = [
     "project",
     "output_title",
@@ -70,13 +70,13 @@ OUTPUTS_HEADERS = [
     "output_year",
     "output_desc",
     "output_contact",
-    "output_email",        # legado (preenchido como "")
+    "output_email",        # legado (mantemos vazio)
     "output_linkedin",     # novo
     "project_url",
     "submitter_email",
     "is_edit","edit_target","edit_request",
     "approved","created_at",
-    "lat","lon"            # novo: coordenadas para o mapa (centro do país)
+    "lat","lon"            # coords p/ mapear (centro do país)
 ]
 
 PROJECT_TAXONOMY = [
@@ -466,7 +466,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO: somente OUTPUT (com flags estáveis + grava lat/lon + limpeza)
+# 9) SUBMISSÃO: somente OUTPUT (grava lat/lon + limpeza segura pós-submit)
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ===== STATE INIT =====
@@ -480,7 +480,11 @@ if "_clear_city_field_out" not in st.session_state:
     st.session_state._clear_city_field_out = False
 if "_clear_city_field_newproj" not in st.session_state:
     st.session_state._clear_city_field_newproj = False
+# flag para fazer reset na *próxima* execução (safe)
+if "_pending_form_reset" not in st.session_state:
+    st.session_state._pending_form_reset = False
 
+# Conjunto de chaves do formulário que serão limpas
 _FORM_KEYS = {
     "submitter_email","project_tax_sel","project_tax_other",
     "new_project_url","new_project_contact","new_project_countries",
@@ -494,15 +498,22 @@ _FORM_KEYS = {
     "country_for_city"
 }
 
-def _reset_output_form():
+def _really_clear_output_form_state():
+    """Apaga as chaves do formulário do session_state (modo seguro)."""
     for k in list(_FORM_KEYS):
         if k in st.session_state:
-            st.session_state[k] = [] if isinstance(st.session_state[k], list) else ""
-    st.session_state.city_list_output = []
-    st.session_state.map_center = None
-    st.session_state.map_zoom = 2
-    st.session_state._clear_city_field_out = False
-    st.session_state._clear_city_field_newproj = False
+            st.session_state.pop(k, None)
+    # extras
+    st.session_state.pop("city_list_output", None)
+    st.session_state.pop("map_center", None)
+    st.session_state["map_zoom"] = 2
+    st.session_state["_clear_city_field_out"] = False
+    st.session_state["_clear_city_field_newproj"] = False
+
+# Se o submit anterior pediu reset, limpamos AGORA (antes de desenhar widgets)
+if st.session_state._pending_form_reset:
+    _really_clear_output_form_state()
+    st.session_state._pending_form_reset = False
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -755,7 +766,8 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
             st.success("✅ Output submission queued")
-            _reset_output_form()
+            # não limpamos widgets aqui; apenas sinalizamos e rerun
+            st.session_state._pending_form_reset = True
             st.rerun()
         else:
             st.error(f"⚠️ {msgO2}")
