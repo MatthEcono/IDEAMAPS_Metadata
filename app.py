@@ -658,7 +658,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     output_data_type = ""
     if output_type_sel == "Dataset":
         output_data_type = st.selectbox(
-            "Data type (for datasets) *", 
+            "NOT APPLICABLE FOR DATASETS *", 
             options=[SELECT_PLACEHOLDER] + DATASET_DTYPES,
             key="output_data_type"
         )
