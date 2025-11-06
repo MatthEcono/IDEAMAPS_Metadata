@@ -341,10 +341,17 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Tabela de outputs (prévia + detalhes)
+# 8) Tabela de outputs (prévia + coluna [See full information] por linha)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
+
+# estado auxiliar para lembrar qual linha foi selecionada
+if "_selected_output_idx" not in st.session_state:
+    st.session_state._selected_output_idx = None
+if "_open_details_flag" not in st.session_state:
+    st.session_state._open_details_flag = False
+
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
     st.caption(f"⚠️ {msgO}")
@@ -352,40 +359,91 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
+        # Colunas de preview + coluna booleana para abrir detalhes
         preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
         for c in preview_cols:
             if c not in df_outputs.columns:
                 df_outputs[c] = ""
-        st.dataframe(
-            df_outputs[preview_cols].reset_index(drop=True),
-            use_container_width=True, hide_index=True
+
+        # dataframe para o editor (não alteramos o df original)
+        df_preview = df_outputs[preview_cols].copy()
+        details_col = "See full information"
+        df_preview[details_col] = False  # coluna de ação
+
+        # Mostra editor: colunas de preview desabilitadas; só a coluna de ação editável
+        edited = st.data_editor(
+            df_preview,
+            use_container_width=True,
+            hide_index=True,
+            disabled=preview_cols,  # impede edição dessas colunas
+            column_config={
+                "project": st.column_config.TextColumn("project"),
+                "output_country": st.column_config.TextColumn("output_country"),
+                "output_city": st.column_config.TextColumn("output_city"),
+                "output_type": st.column_config.TextColumn("output_type"),
+                "output_data_type": st.column_config.TextColumn("output_data_type"),
+                details_col: st.column_config.CheckboxColumn(
+                    details_col,
+                    help="Open details for this row"
+                ),
+            }
         )
 
-        st.markdown("#### See full information")
-        show_cols = [
-            ("project","Project"),
-            ("project_url","Project URL"),
-            ("output_title","Output title"),
-            ("output_type","Output type"),
-            ("output_data_type","Output data type"),
-            ("output_url","Output URL"),
-            ("output_country","Output country"),
-            ("output_city","Output city"),
-            ("output_year","Output year"),
-            ("output_desc","Description"),
-            ("output_contact","Contact"),
-            ("output_linkedin","LinkedIn"),
-        ]
-        for idx, row in df_outputs.reset_index(drop=True).iterrows():
-            label = f"{row.get('project','(no project)')} — {row.get('output_title','(no title)')}"
-            with st.expander(f"See full information: {label}"):
-                lines = []
-                for key, nice in show_cols:
-                    val = str(row.get(key,"")).strip()
-                    if key in ("project_url","output_url") and val:
-                        val = f"[{val}]({val})"
-                    lines.append(f"- **{nice}:** {val if val else '—'}")
-                st.markdown("\n".join(lines))
+        # se o usuário marcou alguma linha, escolhemos a primeira marcada
+        if details_col in edited.columns and edited[details_col].any():
+            first_idx = int(edited.index[edited[details_col]].tolist()[0])
+            st.session_state._selected_output_idx = first_idx
+            st.session_state._open_details_flag = True
+            # limpa a marcação para não ficar persistente no próximo render
+            edited.loc[first_idx, details_col] = False
+
+        # função que renderiza os detalhes como markdown
+        def _render_full_info_md(row):
+            show_cols = [
+                ("project","Project"),
+                ("project_url","Project URL"),
+                ("output_title","Output title"),
+                ("output_type","Output type"),
+                ("output_data_type","Output data type"),
+                ("output_url","Output URL"),
+                ("output_country","Output country"),
+                ("output_city","Output city"),
+                ("output_year","Output year"),
+                ("output_desc","Description"),
+                ("output_contact","Contact"),
+                ("output_linkedin","LinkedIn"),
+            ]
+            lines = []
+            for key, nice in show_cols:
+                val = str(row.get(key,"")).strip()
+                if key in ("project_url","output_url") and val:
+                    val = f"[{val}]({val})"
+                lines.append(f"- **{nice}:** {val if val else '—'}")
+            st.markdown("\n".join(lines))
+
+        # tenta abrir em modal (Streamlit 1.31+); senão, abre painel inline
+        def _open_details(row):
+            try:
+                @st.dialog("Full information")
+                def _dialog(rdict):
+                    _render_full_info_md(rdict)
+                _dialog(row.to_dict())
+            except Exception:
+                with st.container(border=True):
+                    st.markdown("### Full information")
+                    _render_full_info_md(row)
+                    st.button("Close", key="close_inline_details",
+                              on_click=lambda: st.session_state.update(
+                                  {"_open_details_flag": False, "_selected_output_idx": None}
+                              ))
+
+        # se houve clique, mostra detalhes apenas da linha selecionada
+        if st.session_state._open_details_flag and st.session_state._selected_output_idx is not None:
+            row = df_outputs.reset_index(drop=True).iloc[st.session_state._selected_output_idx]
+            _open_details(row)
+            # após abrir, limpa o flag (o modal fecha com X; no inline temos botão Close)
+            st.session_state._open_details_flag = False
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO: somente OUTPUT (com flags estáveis + grava lat/lon + limpeza)
