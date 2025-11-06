@@ -520,6 +520,9 @@ else:
 # app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
 # ... (código anterior permanece igual)
 
+# app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
+# ... (código anterior permanece igual)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO DE OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -534,7 +537,8 @@ _FORM_KEYS = {
     "output_city_dummy",
     "years_selected",
     "output_desc","output_contact","output_linkedin","project_url_for_output",
-    "country_for_city", "output_countries", "city_list_output"
+    "country_for_city", "output_countries", "city_list_output",
+    "_countries_applied"  # Nova chave para controlar se países foram aplicados
 }
 
 def _really_clear_output_form_state():
@@ -569,6 +573,8 @@ if "_clear_city_field_out" not in st.session_state:
     st.session_state._clear_city_field_out = False
 if "_clear_city_field_newproj" not in st.session_state:
     st.session_state._clear_city_field_newproj = False
+if "_countries_applied" not in st.session_state:
+    st.session_state._countries_applied = False  # Nova flag
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -681,6 +687,30 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         key="output_countries"
     )
     
+    # NOVO: Botão para aplicar a seleção de países
+    col_apply1, col_apply2 = st.columns([3, 1])
+    with col_apply1:
+        if st.form_submit_button("✅ Apply countries selection", use_container_width=True):
+            if output_countries:
+                st.session_state._countries_applied = True
+                st.session_state.output_countries = output_countries.copy()
+                st.rerun()
+            else:
+                st.warning("Please select at least one country first")
+    
+    with col_apply2:
+        if st.form_submit_button("🔄 Clear selection", use_container_width=True):
+            st.session_state._countries_applied = False
+            st.session_state.output_countries = []
+            st.session_state.city_list_output = []
+            if "city_coordinates" in st.session_state:
+                st.session_state.city_coordinates = {}
+            st.rerun()
+    
+    # Mostra status da seleção
+    if st.session_state._countries_applied and output_countries:
+        st.success(f"✅ Countries applied: {', '.join(output_countries)}")
+    
     is_global = "Global" in output_countries
     if is_global:
         st.info("Global coverage selected - city fields will be disabled")
@@ -694,7 +724,14 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
 
     # CORREÇÃO: Cidades para OUTPUT - campo de texto livre
     st.markdown("**Cities covered**")
-    available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+    
+    # Só mostra campos de cidade se países foram aplicados e não é Global
+    available_countries_for_cities = []
+    if st.session_state._countries_applied and output_countries:
+        available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+    
+    if not st.session_state._countries_applied:
+        st.info("👆 Please select countries above and click 'Apply countries selection' to add cities")
     
     colx1, colx2, colx3 = st.columns([2,2,1])
     with colx1:
@@ -703,7 +740,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             options=[SELECT_PLACEHOLDER] + available_countries_for_cities,
             index=0,
             key="country_for_city",
-            disabled=is_global or not available_countries_for_cities
+            disabled=is_global or not available_countries_for_cities or not st.session_state._countries_applied
         )
     with colx2:
         # CORREÇÃO: Campo de texto livre para cidade (sem autocompletar)
@@ -714,13 +751,24 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "City name (type manually)",
             key="output_city_dummy",
             placeholder="Enter city name",
-            disabled=is_global
+            disabled=is_global or not st.session_state._countries_applied
         )
     with colx3:
         st.write("")
-        add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not city_input_out.strip()
+        # CORREÇÃO: Botão só habilitado quando países foram aplicados e há seleção válida
+        add_city_disabled = (is_global or 
+                           not st.session_state._countries_applied or 
+                           not country_for_city or 
+                           country_for_city == SELECT_PLACEHOLDER or 
+                           not city_input_out.strip())
+        
         if st.form_submit_button("➕ Add city to OUTPUT", disabled=add_city_disabled):
-            if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and city_input_out.strip():
+            if (st.session_state._countries_applied and 
+                not is_global and 
+                country_for_city and 
+                country_for_city != SELECT_PLACEHOLDER and 
+                city_input_out.strip()):
+                
                 for c in [x.strip() for x in city_input_out.split(",") if x.strip()]:
                     pair = f"{country_for_city} — {c}"
                     if pair not in st.session_state.city_list_output:
@@ -733,10 +781,12 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 st.rerun()
             elif is_global:
                 st.warning("Cannot add cities for global coverage")
+            elif not st.session_state._countries_applied:
+                st.warning("Please apply countries selection first")
             else:
                 st.warning("Choose a valid country and type a city name.")
 
-    if st.session_state.get("city_list_output") and not is_global:
+    if st.session_state.get("city_list_output") and not is_global and st.session_state._countries_applied:
         st.caption("Cities added to OUTPUT:")
         for i, it in enumerate(st.session_state.city_list_output):
             c1, c2 = st.columns([6,1])
@@ -754,7 +804,10 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     st.rerun()
 
     # Mapa com cidades
-    if not is_global and available_countries_for_cities:
+    if (st.session_state._countries_applied and 
+        not is_global and 
+        available_countries_for_cities):
+        
         if available_countries_for_cities:
             first_country = available_countries_for_cities[0]
             if first_country in COUNTRY_CENTER_FULL:
@@ -799,7 +852,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                                     icon=folium.Icon(color="orange", icon="info-sign")
                                 ).add_to(m)
                 st_folium(m, height=320, width=None)
-    elif is_global:
+    elif is_global and st.session_state._countries_applied:
         st.info("Map preview not available for global coverage")
 
     current_year = datetime.utcnow().year
