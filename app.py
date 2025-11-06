@@ -342,6 +342,8 @@ else:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) Tabela de outputs (prévia + coluna [See full information] por linha)
+#     - seleção exclusiva (1 linha por vez)
+#     - após fechar o pop-up, todas as checkboxes voltam desmarcadas
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -351,6 +353,9 @@ if "_selected_output_idx" not in st.session_state:
     st.session_state._selected_output_idx = None
 if "_open_details_flag" not in st.session_state:
     st.session_state._open_details_flag = False
+# Versão do editor para forçar remontagem (e assim limpar checkboxes)
+if "_outputs_editor_key_version" not in st.session_state:
+    st.session_state._outputs_editor_key_version = 0
 
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
@@ -359,7 +364,7 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
-        # Trabalhamos sempre com RangeIndex estável
+        # Índice estável
         df_base = df_outputs.reset_index(drop=True).copy()
 
         preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
@@ -367,18 +372,20 @@ else:
             if c not in df_base.columns:
                 df_base[c] = ""
 
-        # dataframe de preview + coluna de ação
+        # Dataframe de preview + coluna de ação
         df_preview = df_base[preview_cols].copy()
         details_col = "See full information"
         df_preview[details_col] = False
 
-        # Editor com apenas a coluna de ação editável
+        # Chave única por versão para resetar seleção após o pop-up
+        editor_key = f"outputs_editor_{st.session_state._outputs_editor_key_version}"
+
         edited = st.data_editor(
             df_preview,
-            key="outputs_editor",
+            key=editor_key,
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols,  # evita edição nas colunas de preview
+            disabled=preview_cols,  # só a coluna de ação é editável
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
@@ -395,18 +402,19 @@ else:
         # Descobre qual linha foi marcada (pega a primeira marcada)
         selected_idx_list = []
         if details_col in edited.columns:
-            # como o índice é RangeIndex, podemos usar enumerate de forma segura
             selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
 
         if selected_idx_list:
+            # Seleção exclusiva: toma apenas a primeira marcada
             idx = int(selected_idx_list[0])
-            # Guarda seleção e sinaliza para abrir
+            # Salva seleção e sinaliza abertura
             st.session_state._selected_output_idx = idx
             st.session_state._open_details_flag = True
-            # “Desmarca” visualmente para a próxima renderização
-            edited.at[idx, details_col] = False
+            # Aumenta a versão do editor AGORA para que, na próxima renderização
+            # (após fechar o modal), o data_editor remonte sem nenhum checkbox marcado
+            st.session_state._outputs_editor_key_version += 1
 
-        # Função para renderizar detalhes SEMPRE completos
+        # Renderiza os detalhes SEMPRE completos
         def _render_full_info_md(row):
             show_cols = [
                 ("project","Project"),
@@ -430,7 +438,7 @@ else:
                 lines.append(f"- **{nice}:** {val if val else '—'}")
             st.markdown("\n".join(lines))
 
-        # Tenta abrir em popup (st.dialog); cai para inline se não houver
+        # Tenta abrir em modal; se indisponível, abre inline
         def _open_details(row):
             try:
                 @st.dialog("Full information")
@@ -449,14 +457,16 @@ else:
                         )
                     )
 
-        # Abre detalhes apenas se o índice for válido
+        # Abre somente a linha selecionada (se válida)
         if st.session_state._open_details_flag:
             idx = st.session_state._selected_output_idx
             if isinstance(idx, int) and (0 <= idx < len(df_base)):
                 row = df_base.iloc[idx]
                 _open_details(row)
-            # Reseta flags em qualquer caso para evitar índices “fantasmas”
+
+            # Limpa flags para não reabrir no próximo rerun
             st.session_state._open_details_flag = False
+            st.session_state._selected_output_idx = None
 
 
 
