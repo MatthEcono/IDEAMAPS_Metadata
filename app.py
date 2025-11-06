@@ -475,7 +475,7 @@ st.header("Submit Output (goes to review queue)")
 if "form_data" not in ss:
     ss.form_data = {"cities": []}
 
-# Helpers de cidade (mesmos do seu código)
+# Helpers de cidade
 def add_city(country, city_name):
     if country and country != SELECT_PLACEHOLDER and city_name.strip():
         for c in [x.strip() for x in city_name.split(",") if x.strip()]:
@@ -493,15 +493,25 @@ def remove_city(index):
 
 def clear_form():
     ss.form_data = {"cities": []}
-    # Limpa widgets principais (chaves usadas abaixo)
     for k in [
         "submitter_email","project_tax_sel","project_tax_other","output_type_sel",
         "output_data_type","output_title","output_url","new_project_countries",
         "new_country_select","new_city_input","new_project_url","new_project_contact",
         "output_countries","output_country_select","output_city_input","output_country_other",
-        "years_selected","output_desc","output_contact","output_linkedin","project_url_for_output"
+        "years_selected","output_desc","output_contact","output_linkedin","project_url_for_output",
+        "use_same_countries_for_output"
     ]:
         if k in ss: del ss[k]
+
+def render_cities_list(title="Added cities"):
+    if ss.form_data["cities"]:
+        st.markdown(f"**{title}:**")
+        for i, city_pair in enumerate(ss.form_data["cities"]):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.write(f"📍 {city_pair}")
+            with col2:
+                st.button("🗑️ Remove", key=f"remove_{title}_{i}", on_click=lambda i=i: remove_city(i))
 
 # ------ Campos básicos (reativos) ------
 st.subheader("Basic Information")
@@ -525,7 +535,6 @@ project_tax_other = st.text_input(
 
 output_type_sel = st.selectbox("Output Type*", options=OUTPUT_TYPES, key="output_type_sel")
 
-# Mostra automaticamente o seletor de tipo de dado quando for Dataset
 if output_type_sel == "Dataset":
     output_data_type = st.selectbox(
         "Data type (for datasets)*",
@@ -574,6 +583,9 @@ if is_other_project:
             st.write(""); st.write("")
             st.button("➕ Add City", use_container_width=True, on_click=_cb_add_new_city)
 
+        # Lista logo abaixo do Add City
+        render_cities_list("Added cities (project)")
+
     new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
     new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
 else:
@@ -583,16 +595,34 @@ else:
 
 # ------ Cobertura geográfica do output ------
 st.subheader("Geographic Coverage")
-output_countries = st.multiselect(
-    "Select countries (select 'Global' for worldwide coverage)*",
-    options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"],
-    key="output_countries"
-)
-is_global = "Global" in output_countries
+
+use_same_countries = False
+if is_other_project:
+    use_same_countries = st.checkbox(
+        "Use the same countries selected above",
+        value=True,
+        key="use_same_countries_for_output"
+    )
+
+if is_other_project and use_same_countries:
+    ss["output_countries"] = ss.get("new_project_countries", [])
+    output_countries = ss["output_countries"]
+    if output_countries:
+        st.write(", ".join(output_countries))
+    else:
+        st.caption("No countries selected above.")
+else:
+    output_countries = st.multiselect(
+        "Select countries (select 'Global' for worldwide coverage)*",
+        options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"],
+        key="output_countries"
+    )
+
+is_global = "Global" in (output_countries or [])
 output_country_other = st.text_input(
     "Please specify other geographic coverage",
     key="output_country_other"
-) if "Other: ______" in output_countries else ""
+) if (not (is_other_project and use_same_countries)) and ("Other: ______" in (output_countries or [])) else ""
 
 # Se países selecionados (e não global), liberar cidades imediatamente
 if output_countries and not is_global:
@@ -619,27 +649,15 @@ if output_countries and not is_global:
             st.write(""); st.write("")
             st.button("➕ Add City", use_container_width=True, on_click=_cb_add_output_city)
 
-if is_global:
+        # Lista logo abaixo do Add City
+        render_cities_list("Added cities")
+elif is_global:
     st.info("🌍 Global coverage selected - city selection is disabled")
-
-# Lista de cidades (reativa)
-if ss.form_data["cities"]:
-    st.write("**Added cities:**")
-    for i, city_pair in enumerate(ss.form_data["cities"]):
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            st.write(f"📍 {city_pair}")
-        def _mk_rm(i=i):
-            def _cb():
-                remove_city(i)
-            return _cb
-        with col2:
-            st.button("🗑️ Remove", key=f"remove_{i}", on_click=_mk_rm(i))
 
 # Mapa de preview (reativo)
 if ss.form_data["cities"] and not is_global:
     st.write("**Map Preview:**")
-    available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+    available_countries = [c for c in (output_countries or []) if c not in ["Global", "Other: ______"]]
     if available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
         center_lat, center_lon = COUNTRY_CENTER_FULL[available_countries[0]]
     else:
@@ -647,7 +665,7 @@ if ss.form_data["cities"] and not is_global:
 
     m = folium.Map(location=[center_lat, center_lon], zoom_start=3, tiles="CartoDB positron")
 
-    for country in output_countries:
+    for country in (output_countries or []):
         if country in COUNTRY_CENTER_FULL and country not in ["Global", "Other: ______"]:
             folium.CircleMarker(
                 location=COUNTRY_CENTER_FULL[country],
@@ -684,8 +702,8 @@ col1, col2 = st.columns([1, 1])
 
 def _cb_clear():
     clear_form()
+
 def _cb_submit():
-    # Validações (mesma lógica do seu bloco anterior)
     errors = []
     if not ss.get("submitter_email","").strip():
         errors.append("❌ Submitter email is required")
@@ -801,4 +819,3 @@ with col1:
     st.button("✅ Submit for Review", use_container_width=True, type="primary", on_click=_cb_submit)
 with col2:
     st.button("🗑️ Clear Form", use_container_width=True, type="secondary", on_click=_cb_clear)
-
