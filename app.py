@@ -465,8 +465,9 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT - COMPORTAMENTO REATIVO CORRIGIDO
+# 9) SUBMISSÃO DE OUTPUT - CORRIGIDA (SEM USO INCORRETO DO SESSION_STATE)
 # ──────────────────────────────────────────────────────────────────────────────
+
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
 
@@ -474,7 +475,6 @@ st.header("Submit Output (goes to review queue)")
 if "form_data" not in ss:
     ss.form_data = {
         "cities": [],
-        "countries_applied": False,
         "show_city_section": False
     }
 
@@ -500,55 +500,8 @@ def clear_form():
     """Limpa o formulário"""
     ss.form_data = {
         "cities": [],
-        "countries_applied": False,
         "show_city_section": False
     }
-
-# Callbacks para comportamento reativo
-def on_project_change():
-    """Callback quando o projeto muda"""
-    if not ss.get("project_tax_sel", "").startswith("Other"):
-        ss.project_tax_other = ""
-    st.rerun()
-
-def on_output_type_change():
-    """Callback quando o tipo de output muda"""
-    # Se não for Dataset, limpa o campo de tipo de dados
-    if ss.get("output_type_sel", "") != "Dataset":
-        ss.output_data_type = SELECT_PLACEHOLDER
-    st.rerun()
-
-def on_countries_change():
-    """Callback quando os países mudam"""
-    selected_countries = ss.get("output_countries", [])
-    has_countries = bool(selected_countries)
-    is_global = "Global" in selected_countries
-    
-    # Mostra seção de cidades apenas se há países selecionados e não é global
-    ss.form_data["show_city_section"] = has_countries and not is_global
-    ss.form_data["countries_applied"] = has_countries
-    
-    st.rerun()
-
-def on_city_input_change():
-    """Callback quando o input de cidade muda - adiciona automaticamente"""
-    country = ss.get("output_country_select", SELECT_PLACEHOLDER)
-    city_input = ss.get("output_city_input", "").strip()
-    
-    if city_input and country and country != SELECT_PLACEHOLDER:
-        add_city(country, city_input)
-        ss.output_city_input = ""  # Limpa o campo após adicionar
-        st.rerun()
-
-def on_new_city_input_change():
-    """Callback quando o input de cidade do novo projeto muda"""
-    country = ss.get("new_country_select", SELECT_PLACEHOLDER)
-    city_input = ss.get("new_city_input", "").strip()
-    
-    if city_input and country and country != SELECT_PLACEHOLDER:
-        add_city(country, city_input)
-        ss.new_city_input = ""  # Limpa o campo após adicionar
-        st.rerun()
 
 # Formulário principal
 with st.form("output_form", clear_on_submit=False):
@@ -557,50 +510,37 @@ with st.form("output_form", clear_on_submit=False):
     # Campos obrigatórios
     submitter_email = st.text_input(
         "Submitter email (required for review)*",
-        placeholder="name@org.org",
-        key="submitter_email"
+        placeholder="name@org.org"
     )
     
     project_tax_sel = st.selectbox(
         "Project Name (taxonomy)*",
-        options=PROJECT_TAXONOMY,
-        key="project_tax_sel",
-        on_change=on_project_change
+        options=PROJECT_TAXONOMY
     )
     
     is_other_project = project_tax_sel.startswith("Other")
     project_tax_other = ""
     if is_other_project:
-        project_tax_other = st.text_input(
-            "Please specify the project (taxonomy)*",
-            key="project_tax_other"
-        )
+        project_tax_other = st.text_input("Please specify the project (taxonomy)*")
     
-    output_type_sel = st.selectbox(
-        "Output Type*", 
-        options=OUTPUT_TYPES,
-        key="output_type_sel",
-        on_change=on_output_type_change
-    )
+    output_type_sel = st.selectbox("Output Type*", options=OUTPUT_TYPES)
     
-    # Campo condicional para Dataset
-    output_data_type = SELECT_PLACEHOLDER
+    # Campo condicional para Dataset - CORREÇÃO AQUI
+    output_data_type = None
     if output_type_sel == "Dataset":
         output_data_type = st.selectbox(
             "Data type (for datasets)*", 
-            options=[SELECT_PLACEHOLDER] + DATASET_DTYPES,
-            key="output_data_type"
+            options=[SELECT_PLACEHOLDER] + DATASET_DTYPES
         )
+    else:
+        output_data_type = SELECT_PLACEHOLDER
     
     output_type_other = ""
     if output_type_sel.startswith("Other"):
-        output_type_other = st.text_input(
-            "Please specify the output type*",
-            key="output_type_other"
-        )
+        output_type_other = st.text_input("Please specify the output type*")
     
-    output_title = st.text_input("Output Name*", key="output_title")
-    output_url = st.text_input("Output URL (optional)", key="output_url")
+    output_title = st.text_input("Output Name*")
+    output_url = st.text_input("Output URL (optional)")
     
     # Seção para novo projeto
     if is_other_project:
@@ -608,14 +548,13 @@ with st.form("output_form", clear_on_submit=False):
         
         new_project_countries = st.multiselect(
             "Implementation countries (one or more)*",
-            COUNTRY_NAMES,
-            key="new_project_countries"
+            COUNTRY_NAMES
         )
         
         if new_project_countries:
             st.write("**Add cities for the new project:**")
             
-            col_country, col_city = st.columns([2, 2])
+            col_country, col_city, col_btn = st.columns([2, 2, 1])
             with col_country:
                 new_country_select = st.selectbox(
                     "Select country",
@@ -625,41 +564,42 @@ with st.form("output_form", clear_on_submit=False):
             with col_city:
                 new_city_input = st.text_input(
                     "City name (accepts multiple, separated by commas)*",
-                    placeholder="Enter city name - auto-adds on input",
-                    key="new_city_input",
-                    on_change=on_new_city_input_change
+                    placeholder="Enter city name",
+                    key="new_city_input"
                 )
+            with col_btn:
+                st.write("")
+                st.write("")
+                add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
+                if add_new_city:
+                    if add_city(new_country_select, new_city_input):
+                        st.rerun()
         
-        new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
-        new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
+        new_project_url = st.text_input("Project URL (optional)")
+        new_project_contact = st.text_input("Project contact / institution (optional)")
     
     # Cobertura geográfica do output
     st.subheader("Geographic Coverage")
     
     output_countries = st.multiselect(
         "Select countries (select 'Global' for worldwide coverage)*",
-        options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"],
-        key="output_countries",
-        on_change=on_countries_change
+        options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
     )
     
     is_global = "Global" in output_countries
     
     output_country_other = ""
     if "Other: ______" in output_countries:
-        output_country_other = st.text_input(
-            "Please specify other geographic coverage",
-            key="output_country_other"
-        )
+        output_country_other = st.text_input("Please specify other geographic coverage")
     
-    # SEÇÃO DE CIDADES - APARECE AUTOMATICAMENTE
-    if ss.form_data["show_city_section"]:
+    # SEÇÃO DE CIDADES - APARECE AUTOMATICAMENTE QUANDO PAÍSES SÃO SELECIONADOS
+    if output_countries and not is_global:
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         
         if available_countries:
             st.write("**Add cities for this output:**")
             
-            col_country_out, col_city_out = st.columns([2, 2])
+            col_country_out, col_city_out, col_btn_out = st.columns([2, 2, 1])
             with col_country_out:
                 output_country_select = st.selectbox(
                     "Select country",
@@ -669,10 +609,16 @@ with st.form("output_form", clear_on_submit=False):
             with col_city_out:
                 output_city_input = st.text_input(
                     "City name (accepts multiple, separated by commas)*",
-                    placeholder="Enter city name - auto-adds on input",
-                    key="output_city_input",
-                    on_change=on_city_input_change
+                    placeholder="Enter city name",
+                    key="output_city_input"
                 )
+            with col_btn_out:
+                st.write("")
+                st.write("")
+                add_output_city = st.form_submit_button("➕ Add City", use_container_width=True)
+                if add_output_city:
+                    if add_city(output_country_select, output_city_input):
+                        st.rerun()
     
     # Mensagem informativa quando Global é selecionado
     if is_global:
@@ -686,7 +632,8 @@ with st.form("output_form", clear_on_submit=False):
             with col1:
                 st.write(f"📍 {city_pair}")
             with col2:
-                if st.form_submit_button("🗑️ Remove", key=f"remove_{i}", use_container_width=True):
+                remove_btn = st.form_submit_button("🗑️ Remove", key=f"remove_{i}")
+                if remove_btn:
                     if remove_city(i):
                         st.rerun()
     
@@ -735,12 +682,12 @@ with st.form("output_form", clear_on_submit=False):
     
     current_year = datetime.utcnow().year
     base_years_desc = list(range(current_year, 1999, -1))
-    years_selected = st.multiselect("Year of output release", base_years_desc, key="years_selected")
+    years_selected = st.multiselect("Year of output release", base_years_desc)
     
-    output_desc = st.text_area("Short description of output", key="output_desc")
-    output_contact = st.text_input("Name & institution of person responsible", key="output_contact")
-    output_linkedin = st.text_input("LinkedIn address of contact", key="output_linkedin")
-    project_url_for_output = st.text_input("Project URL (optional, if different)", key="project_url_for_output")
+    output_desc = st.text_area("Short description of output")
+    output_contact = st.text_input("Name & institution of person responsible")
+    output_linkedin = st.text_input("LinkedIn address of contact")
+    project_url_for_output = st.text_input("Project URL (optional, if different)")
     
     # Botões de ação
     col1, col2 = st.columns([1, 1])
