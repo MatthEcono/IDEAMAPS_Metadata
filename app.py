@@ -660,7 +660,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 12) SUBMISSÃO DE OUTPUT - COM SIGLAS DE PAÍSES E SELEÇÃO DE CIDADES
+# 12) SUBMISSÃO DE OUTPUT - COM SELEÇÃO DE CIDADES RESTAURADA
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
@@ -778,19 +778,30 @@ with st.form("output_form", clear_on_submit=False):
                 cities_list = [SELECT_PLACEHOLDER]
                 if new_country_select and new_country_select != SELECT_PLACEHOLDER:
                     cities_data = get_cities_by_country(new_country_select)
-                    cities_list += [city['city'] for city in cities_data]
+                    if cities_data:
+                        cities_list += [city['city'] for city in cities_data]
+                    else:
+                        st.info("No cities found in database. You can type the city name manually below.")
                 
                 new_city_select = st.selectbox(
-                    "Select city",
+                    "Select city from list",
                     options=cities_list,
                     key="new_city_select"
+                )
+                
+                # Campo para digitar cidade manualmente
+                new_city_manual = st.text_input(
+                    "Or type city name manually",
+                    placeholder="Enter city name if not in list",
+                    key="new_city_manual"
                 )
             with col_btn:
                 st.write("")
                 st.write("")
                 add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
                 if add_new_city:
-                    if add_city(new_country_select, new_city_select):
+                    city_to_add = new_city_manual.strip() if new_city_manual.strip() else new_city_select
+                    if add_city(new_country_select, city_to_add):
                         st.rerun()
         
         new_project_url = st.text_input("Project URL (optional)")
@@ -837,19 +848,30 @@ with st.form("output_form", clear_on_submit=False):
                 cities_list_out = [SELECT_PLACEHOLDER]
                 if output_country_select and output_country_select != SELECT_PLACEHOLDER:
                     cities_data_out = get_cities_by_country(output_country_select)
-                    cities_list_out += [city['city'] for city in cities_data_out]
+                    if cities_data_out:
+                        cities_list_out += [city['city'] for city in cities_data_out]
+                    else:
+                        st.info("No cities found in database. You can type the city name manually below.")
                 
                 output_city_select = st.selectbox(
-                    "Select city",
+                    "Select city from list",
                     options=cities_list_out,
                     key="output_city_select"
+                )
+                
+                # Campo para digitar cidade manualmente
+                output_city_manual = st.text_input(
+                    "Or type city name manually",
+                    placeholder="Enter city name if not in list",
+                    key="output_city_manual"
                 )
             with col_btn_out:
                 st.write("")
                 st.write("")
                 add_output_city = st.form_submit_button("➕ Add City", use_container_width=True)
                 if add_output_city:
-                    if add_city(output_country_select, output_city_select):
+                    city_to_add = output_city_manual.strip() if output_city_manual.strip() else output_city_select
+                    if add_city(output_country_select, city_to_add):
                         st.rerun()
     
     # Lista de cidades adicionadas
