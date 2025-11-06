@@ -442,7 +442,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT (ordem ajustada)
+# 9) SUBMISSÃO DE OUTPUT (ordem correta + keys estáveis)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -458,6 +458,8 @@ if "map_center" not in st.session_state:
     st.session_state.map_center = None
 if "map_zoom" not in st.session_state:
     st.session_state.map_zoom = 2
+if "output_countries" not in st.session_state:
+    st.session_state.output_countries = []     # <- chave fixa p/ países
 
 def add_city(country, city_csv):
     if country and country != SELECT_PLACEHOLDER and city_csv.strip():
@@ -478,12 +480,13 @@ def clear_form():
     st.session_state._clear_city_field_newproj = False
     st.session_state.map_center = None
     st.session_state.map_zoom = 2
+    st.session_state.output_countries = []
 
 with st.form("output_form", clear_on_submit=False):
     # 1) Submitter email
     submitter_email = st.text_input("Submitter email (required for review)*", placeholder="name@org.org")
 
-    # 2) Project taxonomy (+ detalhes de novo projeto logo após)
+    # 2) Project taxonomy (+ novo projeto)
     project_tax_sel = st.selectbox("Project Name (taxonomy)*", options=PROJECT_TAXONOMY)
     is_other_project = project_tax_sel.startswith("Other")
     project_tax_other = ""
@@ -541,20 +544,23 @@ with st.form("output_form", clear_on_submit=False):
     # 6) Output URL
     output_url = st.text_input("Output URL (optional)")
 
-    # 7) Geographic Coverage (AGORA AQUI, logo após o URL)
+    # 7) Geographic Coverage  ─── AGORA AQUI (logo após URL) ───
     st.subheader("Geographic Coverage")
-    output_countries = st.multiselect(
+    st.multiselect(
         "Select countries (select 'Global' for worldwide coverage)*",
-        options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
+        options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"],
+        key="output_countries"   # <- chave fixa
     )
-    is_global = "Global" in output_countries
+    selected_countries = st.session_state.output_countries[:]   # <- sempre a fonte da verdade
+    is_global = "Global" in selected_countries
+
     output_country_other = ""
-    if "Other: ______" in output_countries:
+    if "Other: ______" in selected_countries:
         output_country_other = st.text_input("Please specify other geographic coverage")
 
-    # Cidades — somente se não for Global
-    if output_countries and not is_global:
-        available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+    # 8) Cidades (aparece assim que houver país selecionado e não for Global)
+    if selected_countries and not is_global:
+        available_countries = [c for c in selected_countries if c not in ["Global", "Other: ______"]]
         if available_countries:
             st.write("**Add cities for this output:**")
             c1, c2, c3 = st.columns([2,2,1])
@@ -596,7 +602,7 @@ with st.form("output_form", clear_on_submit=False):
 
     # Preview do mapa (centra no primeiro país selecionado)
     if st.session_state.city_list_output and not is_global:
-        avail = [c for c in output_countries if c not in ["Global","Other: ______"]]
+        avail = [c for c in selected_countries if c not in ["Global","Other: ______"]]
         center = COUNTRY_CENTER_FULL.get(avail[0], (0,0)) if avail else (0,0)
         m = folium.Map(location=center, zoom_start=3, tiles="CartoDB positron")
         for ctry in avail:
@@ -616,30 +622,23 @@ with st.form("output_form", clear_on_submit=False):
                     ).add_to(m)
         st_folium(m, height=300, width=None)
 
-    # 8) Years
+    # 9) Additional info
+    st.subheader("Additional Information")
     current_year = datetime.utcnow().year
     base_years_desc = list(range(current_year, 1999, -1))
     years_selected = st.multiselect("Year of output release", base_years_desc)
-
-    # 9) Description
     output_desc = st.text_area("Short description of output")
-
-    # 10) Contact
     output_contact = st.text_input("Name & institution of person responsible")
-
-    # 11) LinkedIn
     output_linkedin = st.text_input("LinkedIn address of contact")
-
-    # 12) Project URL (optional, if different)
     project_url_for_output = st.text_input("Project URL (optional, if different)")
 
-    # 13) Botões
     c1, c2 = st.columns([1,1])
     with c1:
         submitted = st.form_submit_button("✅ Submit for Review", use_container_width=True, type="primary")
     with c2:
         if st.form_submit_button("🗑️ Clear Form", use_container_width=True, type="secondary"):
             clear_form(); st.rerun()
+
 
 # Processamento da submissão
 if 'submitted' in locals() and submitted:
