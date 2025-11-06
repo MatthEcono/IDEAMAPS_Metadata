@@ -58,7 +58,7 @@ PROJECTS_HEADERS = [
     "approved","created_at"
 ]
 
-# Mantemos output_email por legado (vazio). Novo campo: output_linkedin
+# Importante: agora outputs também têm lat/lon e output_linkedin
 OUTPUTS_HEADERS = [
     "project",
     "output_title",
@@ -70,12 +70,13 @@ OUTPUTS_HEADERS = [
     "output_year",
     "output_desc",
     "output_contact",
-    "output_email",       # legado
-    "output_linkedin",    # novo
+    "output_email",        # legado (preenchido como "")
+    "output_linkedin",     # novo
     "project_url",
     "submitter_email",
     "is_edit","edit_target","edit_request",
-    "approved","created_at"
+    "approved","created_at",
+    "lat","lon"            # novo: coordenadas para o mapa (centro do país)
 ]
 
 PROJECT_TAXONOMY = [
@@ -123,11 +124,12 @@ def _open_or_create(ws_name: str, headers: Optional[List[str]] = None):
         ws = ss.worksheet(ws_name)
     except gspread.exceptions.WorksheetNotFound:
         ncols = max(10, len(headers) if headers else 10)
-        ws = ss.add_worksheet(title=ws_name, rows=2000, cols=ncols)
+        ws = ss.add_worksheet(title=ws_name, rows=3000, cols=ncols)
         if headers:
             ws.update("A1", [headers])
     except Exception as e:
         return None, f"Worksheet error: {e}"
+    # garante headers
     try:
         current = ws.row_values(1) or []
         missing = [h for h in (headers or []) if h not in current]
@@ -223,7 +225,7 @@ if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Carregar aprovados (projetos só para pré-popular / outputs para exibir)
+# 6) Carregamento (projects só para eventual pré-população; outputs exibidos)
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -252,11 +254,29 @@ def load_outputs_public():
         df = pd.DataFrame(ws.get_all_records())
         if df.empty:
             return df, True, None
+        # garante headers
         for c in OUTPUTS_HEADERS:
             if c not in df.columns:
                 df[c] = ""
+        # normaliza aprovado
         df["approved"] = df["approved"].astype(str).str.upper().isin(["TRUE","1","YES"])
         df = df[df["approved"]].copy()
+        # tipa coords
+        df["lat"] = df["lat"].apply(_as_float)
+        df["lon"] = df["lon"].apply(_as_float)
+        # fallback: se não houver lat/lon, tenta do país
+        def _fallback_coords(row):
+            if pd.notna(row.get("lat")) and pd.notna(row.get("lon")):
+                return row["lat"], row["lon"]
+            ctry = str(row.get("output_country","")).strip()
+            if ctry in COUNTRY_CENTER_FULL:
+                return COUNTRY_CENTER_FULL[ctry]
+            return None, None
+        lats, lons = [], []
+        for _, r in df.iterrows():
+            la, lo = _fallback_coords(r)
+            lats.append(la); lons.append(lo)
+        df["lat"] = lats; df["lon"] = lons
         return df, True, None
     except Exception as e:
         return pd.DataFrame(), False, f"Read error: {e}"
@@ -270,8 +290,60 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Somente tabela de outputs (prévia + detalhes)
+# 7) Mapa (APENAS de OUTPUTS aprovados, usando lat/lon salvos no sheet)
 # ──────────────────────────────────────────────────────────────────────────────
+st.subheader("Projects & outputs map (approved outputs)")
+df_outputs_map, okOm, msgOm = load_outputs_public()
+if not okOm and msgOm:
+    st.caption(f"⚠️ {msgOm}")
+else:
+    has_coords = (not df_outputs_map.empty) and (df_outputs_map[["lat","lon"]].dropna().shape[0] > 0)
+    if has_coords:
+        dfc = df_outputs_map.dropna(subset=["lat","lon"]).copy()
+        m = folium.Map(
+            location=[dfc["lat"].mean(), dfc["lon"].mean()],
+            zoom_start=2, tiles="CartoDB dark_matter"
+        )
+        groups = dfc.groupby(["output_country","lat","lon"], as_index=False)
+        for (country, lat, lon), g in groups:
+            # agregação: lista de projetos e outputs
+            proj_info = {}
+            for _, r in g.iterrows():
+                proj = (str(r.get("project","")).strip() or "(unnamed)")
+                out_title = str(r.get("output_title","")).strip()
+                out_url = _clean_url(r.get("output_url",""))
+                proj_info.setdefault(proj, [])
+                proj_info[proj].append((out_title, out_url))
+            # tooltip/popup
+            lines = ["<div style='font-size:0.9rem; color:#0f172a;'>",
+                     f"<b>{country if country else '—'}</b>",
+                     "<ul style='padding-left:1rem; margin:0;'>"]
+            for proj, outs in proj_info.items():
+                inner = []
+                for (t, u) in outs:
+                    if t:
+                        if u:
+                            inner.append(f"{t} (<a href='{u}' target='_blank' style='color:#2563eb;text-decoration:none;'>link</a>)")
+                        else:
+                            inner.append(t)
+                inner_txt = "; ".join(inner) if inner else "—"
+                lines.append(f"<li><b>{proj}</b> — {inner_txt}</li>")
+            lines.append("</ul></div>")
+            html_block = "".join(lines)
+            folium.CircleMarker(
+                location=[lat, lon], radius=6, color="#38bdf8", fill=True, fill_opacity=0.9,
+                tooltip=folium.Tooltip(html_block, sticky=True, direction='top',
+                                       style="background:#ffffff; color:#0f172a; border:1px solid #cbd5e1; border-radius:8px; padding:8px;"),
+                popup=folium.Popup(html_block, max_width=420),
+            ).add_to(m)
+        st_folium(m, height=520, width=None)
+    else:
+        st.info("No approved outputs with location yet.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 8) Tabela de outputs (prévia + detalhes)
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown("---")
 st.subheader("Browse outputs (approved only)")
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
@@ -316,23 +388,21 @@ else:
                 st.markdown("\n".join(lines))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) SUBMISSÃO: somente OUTPUT (com mapa e lista de cidades)
+# 9) SUBMISSÃO: somente OUTPUT (com flags estáveis + grava lat/lon + limpeza)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# ===== STATE INIT (antes do formulário) =====
+# ===== STATE INIT =====
 if "city_list_output" not in st.session_state:
     st.session_state.city_list_output = []
 if "map_center" not in st.session_state:
     st.session_state.map_center = None
 if "map_zoom" not in st.session_state:
     st.session_state.map_zoom = 2
-# flags para limpar campos de cidade depois do submit do botão ADD (evita mexer no widget durante o callback)
 if "_clear_city_field_out" not in st.session_state:
     st.session_state._clear_city_field_out = False
 if "_clear_city_field_newproj" not in st.session_state:
     st.session_state._clear_city_field_newproj = False
 
-# keys p/ reset final
 _FORM_KEYS = {
     "submitter_email","project_tax_sel","project_tax_other",
     "new_project_url","new_project_contact","new_project_countries",
@@ -349,11 +419,7 @@ _FORM_KEYS = {
 def _reset_output_form():
     for k in list(_FORM_KEYS):
         if k in st.session_state:
-            # strings → "", listas → []
-            if isinstance(st.session_state[k], list):
-                st.session_state[k] = []
-            else:
-                st.session_state[k] = ""
+            st.session_state[k] = [] if isinstance(st.session_state[k], list) else ""
     st.session_state.city_list_output = []
     st.session_state.map_center = None
     st.session_state.map_zoom = 2
@@ -381,12 +447,11 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     if is_other_project:
         project_tax_other = st.text_input("Please specify the project (taxonomy)", key="project_tax_other")
 
-    # NEW project details (se "Other")
+    # Novo projeto (se Other)
     new_project_url = ""
     new_project_contact = ""
     if is_other_project:
         st.markdown("**New project details (required if not in taxonomy)**")
-
         countries_sel = st.multiselect(
             "Implementation countries (one or more)",
             COUNTRY_NAMES,
@@ -448,13 +513,13 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     output_title = st.text_input("Output Name", key="output_title")
     output_url   = st.text_input("Output URL (optional)", key="output_url")
 
-    # País de cobertura → mapa
+    # País de cobertura → mapa e coords
     countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
     output_country = st.selectbox("Geographic coverage of output", options=countries_fixed, key="output_country")
     if output_country and (output_country in COUNTRY_CENTER_FULL):
-        lat, lon = COUNTRY_CENTER_FULL.get(output_country, (None, None))
-        if (lat is not None) and (lon is not None):
-            st.session_state.map_center = [lat, lon]
+        lat_sel, lon_sel = COUNTRY_CENTER_FULL.get(output_country, (None, None))
+        if (lat_sel is not None) and (lon_sel is not None):
+            st.session_state.map_center = [lat_sel, lon_sel]
             st.session_state.map_zoom = 4
     elif isinstance(output_country, str) and output_country.startswith("Other"):
         st.session_state.map_center = None
@@ -558,9 +623,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             for pair in pairsP:
                 if "—" not in pair: continue
                 country, city = [p.strip() for p in pair.split("—",1)]
-                lat, lon = COUNTRY_CENTER_FULL.get(country, (None, None))
+                latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
                 rowP = {
-                    "country": country, "city": city, "lat": lat, "lon": lon,
+                    "country": country, "city": city, "lat": latp, "lon": lonp,
                     "project_name": project_tax_other.strip(), "years": "",
                     "status": "", "data_types": "", "description": "",
                     "contact": new_project_contact, "access": "", "url": new_project_url,
@@ -574,10 +639,15 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             if not ok_allP:
                 st.error(f"⚠️ Project staging write error: {msg_anyP}"); st.stop()
 
-        # 2) Grava o output (fila)
+        # 2) Grava o output (fila) com lat/lon
         wsO, errO = ws_outputs()
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs."); st.stop()
+
+        # coords do país selecionado (se "Other", não gravamos coords)
+        lat_o, lon_o = (None, None)
+        if isinstance(output_country, str) and (output_country in COUNTRY_CENTER_FULL):
+            lat_o, lon_o = COUNTRY_CENTER_FULL[output_country]
 
         output_cities_str = ", ".join(st.session_state.city_list_output) if st.session_state.city_list_output else ""
 
@@ -588,7 +658,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
             "output_data_type": (output_data_type if (output_type_sel=="Dataset") else ""),
             "output_url": output_url,
-            "output_country": ("" if isinstance(output_country, str) and output_country.startswith("Other") else output_country),
+            "output_country": ("" if (isinstance(output_country, str) and output_country.startswith("Other")) else output_country),
             "output_country_other": (output_country_other if (isinstance(output_country, str) and output_country.startswith("Other")) else ""),
             "output_city": output_cities_str,
             "output_year": final_years_str,
@@ -601,11 +671,13 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "is_edit": "FALSE","edit_target":"","edit_request":"New submission",
             "approved": "FALSE",
             "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+            "lat": lat_o if lat_o is not None else "",
+            "lon": lon_o if lon_o is not None else "",
         }
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
-            st.success("✅ Output submission queued (approved=FALSE).")
-            _reset_output_form()   # limpa tudo
+            st.success("✅ Output submission queued")
+            _reset_output_form()
             st.rerun()
         else:
             st.error(f"⚠️ {msgO2}")
