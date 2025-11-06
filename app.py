@@ -342,8 +342,6 @@ else:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) Tabela de outputs (prévia + coluna [See full information] por linha)
-#     - seleção exclusiva
-#     - desmarca imediatamente ao abrir o pop-up (ou ao fechar)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -353,9 +351,9 @@ ss = st.session_state
 if "_selected_output_idx" not in ss:
     ss._selected_output_idx = None
 if "_want_open_dialog" not in ss:
-    ss._want_open_dialog = False           # sinaliza que, após o rerun, devemos abrir o modal
+    ss._want_open_dialog = False
 if "_outputs_editor_key_version" not in ss:
-    ss._outputs_editor_key_version = 0     # força remontagem do editor (limpa checkboxes)
+    ss._outputs_editor_key_version = 0
 
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
@@ -385,7 +383,7 @@ else:
             key=editor_key,
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols,  # só a coluna de ação é editável
+            disabled=preview_cols,
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
@@ -399,19 +397,18 @@ else:
             }
         )
 
-        # Descobre qual linha foi marcada (primeira marcada)
+        # Descobre qual linha foi marcada
         selected_idx_list = []
         if details_col in edited.columns:
             selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
 
         # Se houve clique: salva índice, marca intenção de abrir, incrementa versão e rerun
         if selected_idx_list and not ss._want_open_dialog:
-            ss._selected_output_idx = int(selected_idx_list[0])  # seleção exclusiva
+            ss._selected_output_idx = int(selected_idx_list[0])
             ss._want_open_dialog = True
-            ss._outputs_editor_key_version += 1  # força limpar checkboxes no próximo render
+            ss._outputs_editor_key_version += 1
             st.rerun()
 
-        # Função para renderizar detalhes SEMPRE completos
         def _render_full_info_md(row):
             show_cols = [
                 ("project","Project"),
@@ -435,7 +432,6 @@ else:
                 lines.append(f"- **{nice}:** {val if val else '—'}")
             st.markdown("\n".join(lines))
 
-        # Abre o pop-up após o rerun, com a tabela já limpa
         def _open_details(row):
             try:
                 @st.dialog("Full information")
@@ -443,7 +439,6 @@ else:
                     _render_full_info_md(rdict)
                 _dialog(row.to_dict())
             except Exception:
-                # Fallback inline se st.dialog não existir
                 with st.container(border=True):
                     st.markdown("### Full information")
                     _render_full_info_md(row)
@@ -455,18 +450,16 @@ else:
                         )
                     )
 
-        # Se devemos abrir (após a seleção e rerun), abre e desarma o flag
         if ss._want_open_dialog:
             idx = ss._selected_output_idx
             if isinstance(idx, int) and (0 <= idx < len(df_base)):
                 row = df_base.iloc[idx]
                 _open_details(row)
-            # desarma para não reabrir em novos reruns (fechou no X = ok)
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO: somente OUTPUT (grava lat/lon + limpeza segura pós-submit)
+# 9) SUBMISSÃO: somente OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
 
 # --- helpers de reset ---
@@ -492,16 +485,16 @@ def _really_clear_output_form_state():
     st.session_state["_clear_city_field_out"] = False
     st.session_state["_clear_city_field_newproj"] = False
 
-# Flag de reset pendente (default)
+# Flag de reset pendente
 if "_pending_form_reset" not in st.session_state:
     st.session_state._pending_form_reset = False
 
-# ⚠️ Faça o reset **antes** de inicializar qualquer estado
+# ⚠️ Faça o reset antes de inicializar qualquer estado
 if st.session_state._pending_form_reset:
     _really_clear_output_form_state()
     st.session_state._pending_form_reset = False
 
-# ===== STATE INIT ===== (agora é seguro recriar padrões)
+# ===== STATE INIT =====
 if "output_countries" not in st.session_state:
     st.session_state.output_countries = []
 if "city_list_output" not in st.session_state:
@@ -589,24 +582,33 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
         new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
 
-    # Tipo de output
+    # CORREÇÃO: Output Type com lógica condicional para Data Type
     output_type_sel = st.selectbox("Output Type", options=OUTPUT_TYPES, key="output_type_sel")
+    
+    # Data Type só aparece e é obrigatório se Output Type for Dataset
+    output_data_type = ""
+    if output_type_sel == "Dataset":
+        output_data_type = st.selectbox(
+            "Data type (for datasets) *", 
+            options=[SELECT_PLACEHOLDER] + DATASET_DTYPES,
+            key="output_data_type"
+        )
+    else:
+        # Se não for Dataset, garante que o campo fica vazio no sheet
+        output_data_type = ""
+
     output_type_other = ""
     if output_type_sel.startswith("Other"):
         output_type_other = st.text_input("Please specify the output type", key="output_type_other")
 
-    output_data_type = ""
-    if output_type_sel == "Dataset":
-        output_data_type = st.selectbox("Data type (for datasets)", options=DATASET_DTYPES, key="output_data_type")
-
-    output_title = st.text_input("Output Name", key="output_title")
+    output_title = st.text_input("Output Name *", key="output_title")
     output_url   = st.text_input("Output URL (optional)", key="output_url")
 
     # CORREÇÃO: Países de cobertura como multiselect
     st.markdown("**Geographic coverage of output**")
     countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
     output_countries = st.multiselect(
-        "Select one or more countries (select 'Global' for worldwide coverage)",
+        "Select one or more countries (select 'Global' for worldwide coverage) *",
         options=countries_fixed,
         key="output_countries"
     )
@@ -675,31 +677,42 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
 
     # Mapa de previsualização - só se não for Global
     if not is_global and available_countries_for_cities:
-        first_country = available_countries_for_cities[0]
-        if first_country in COUNTRY_CENTER_FULL:
-            st.session_state.map_center = COUNTRY_CENTER_FULL[first_country]
-            st.session_state.map_zoom = 4
-            
-        if st.session_state.get("map_center"):
-            m = folium.Map(
-                location=st.session_state.map_center,
-                zoom_start=st.session_state.map_zoom,
-                tiles="CartoDB positron"
-            )
-            # Marca o centro do primeiro país
-            folium.CircleMarker(
-                location=st.session_state.map_center, radius=6, color="#2563eb",
-                fill=True, fill_opacity=0.9, tooltip=f"{first_country}"
-            ).add_to(m)
-            
-            # Adiciona marcadores para cidades
-            for pair in st.session_state.get("city_list_output", []):
-                if "—" in pair:
-                    ctry, cty = [p.strip() for p in pair.split("—",1)]
-                    latlon = COUNTRY_CENTER_FULL.get(ctry)
-                    if latlon:
-                        folium.Marker(location=latlon, tooltip=f"{cty} ({ctry})").add_to(m)
-            st_folium(m, height=320, width=None)
+        # CORREÇÃO: Plota todos os países selecionados no mapa
+        if available_countries_for_cities:
+            # Usa o primeiro país como centro do mapa
+            first_country = available_countries_for_cities[0]
+            if first_country in COUNTRY_CENTER_FULL:
+                st.session_state.map_center = COUNTRY_CENTER_FULL[first_country]
+                st.session_state.map_zoom = 3
+                
+            if st.session_state.get("map_center"):
+                m = folium.Map(
+                    location=st.session_state.map_center,
+                    zoom_start=st.session_state.map_zoom,
+                    tiles="CartoDB positron"
+                )
+                
+                # Marca todos os países selecionados
+                for country in available_countries_for_cities:
+                    if country in COUNTRY_CENTER_FULL:
+                        latlon = COUNTRY_CENTER_FULL[country]
+                        folium.CircleMarker(
+                            location=latlon, radius=8, color="#2563eb",
+                            fill=True, fill_opacity=0.9, tooltip=f"{country}"
+                        ).add_to(m)
+                
+                # Adiciona marcadores para cidades
+                for pair in st.session_state.get("city_list_output", []):
+                    if "—" in pair:
+                        ctry, cty = [p.strip() for p in pair.split("—",1)]
+                        latlon = COUNTRY_CENTER_FULL.get(ctry)
+                        if latlon:
+                            folium.Marker(
+                                location=latlon, 
+                                tooltip=f"{cty} ({ctry})",
+                                icon=folium.Icon(color="green", icon="info-sign")
+                            ).add_to(m)
+                st_folium(m, height=320, width=None)
     elif is_global:
         st.info("Map preview not available for global coverage")
 
@@ -725,19 +738,45 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             st.warning("Please provide the Output Name."); st.stop()
         if not output_countries:
             st.warning("Please select at least one country for geographic coverage."); st.stop()
+        if output_type_sel == "Dataset" and (not output_data_type or output_data_type == SELECT_PLACEHOLDER):
+            st.warning("Please select a Data type for Dataset outputs."); st.stop()
         if is_other_project and not (st.session_state.get("city_list_output") or st.session_state.get("new_project_countries")):
             st.warning("For a new project (Other), please add at least one country/city."); st.stop()
+
+        # CORREÇÃO: Garante que Data Type fica vazio se não for Dataset
+        if output_type_sel != "Dataset":
+            output_data_type = ""
 
         # 1) Se "Other", registrar projeto (fila)
         if is_other_project:
             wsP, errP = ws_projects()
             if errP or wsP is None:
                 st.error(errP or "Worksheet unavailable for projects."); st.stop()
-            pairsP = st.session_state.get("city_list_output", [])[:] or [
-                f"{c} — " for c in (st.session_state.get("new_project_countries") or [])
-            ]
+            
+            # CORREÇÃO: Cria uma linha por país/cidade
+            countries_to_process = st.session_state.get("new_project_countries", [])
+            cities_to_process = st.session_state.get("city_list_output", [])
+            
             ok_allP, msg_anyP = True, None
-            for pair in pairsP:
+            
+            # Processa cada país (sem cidade específica)
+            for country in countries_to_process:
+                latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
+                rowP = {
+                    "country": country, "city": "", "lat": latp, "lon": lonp,
+                    "project_name": project_tax_other.strip(), "years": "",
+                    "status": "", "data_types": "", "description": "",
+                    "contact": new_project_contact, "access": "", "url": new_project_url,
+                    "submitter_email": submitter_email,
+                    "is_edit": "FALSE", "edit_target": "", "edit_request": "New project via output submission",
+                    "approved": "FALSE",
+                    "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                }
+                okP2, msgP2 = _append_row(wsP, PROJECTS_HEADERS, rowP)
+                ok_allP &= okP2; msg_anyP = msgP2
+            
+            # Processa cada cidade (com país)
+            for pair in cities_to_process:
                 if "—" not in pair: continue
                 country, city = [p.strip() for p in pair.split("—",1)]
                 latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
@@ -753,6 +792,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 }
                 okP2, msgP2 = _append_row(wsP, PROJECTS_HEADERS, rowP)
                 ok_allP &= okP2; msg_anyP = msgP2
+                
             if not ok_allP:
                 st.error(f"⚠️ Project staging write error: {msg_anyP}"); st.stop()
 
@@ -761,13 +801,14 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs."); st.stop()
 
-        # coords - usa o primeiro país selecionado (exceto se for Global)
+        # CORREÇÃO: Usa o primeiro país para coordenadas (exceto se for Global)
         lat_o, lon_o = (None, None)
         if not is_global and available_countries_for_cities:
             first_country = available_countries_for_cities[0]
             if first_country in COUNTRY_CENTER_FULL:
                 lat_o, lon_o = COUNTRY_CENTER_FULL[first_country]
 
+        # CORREÇÃO: Formata cidades como string
         output_cities_str = ", ".join(st.session_state.get("city_list_output", [])) if st.session_state.get("city_list_output") else ""
 
         # Prepara string de países para armazenamento
@@ -778,7 +819,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "output_title": output_title,
             "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
             "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
-            "output_data_type": (output_data_type if (output_type_sel=="Dataset") else ""),
+            "output_data_type": output_data_type,  # Já está vazio se não for Dataset
             "output_url": output_url,
             "output_country": output_countries_str,
             "output_country_other": (output_country_other if "Other: ______" in output_countries else ""),
@@ -798,7 +839,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         }
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
-            st.success("✅ Output submission queued")
+            st.success("✅ Output submission queued for review")
             # Limpeza completa do estado do formulário
             _really_clear_output_form_state()
             st.session_state._pending_form_reset = True
