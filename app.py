@@ -180,29 +180,29 @@ def _ulid_like():
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Países e Cidades (CSV local)
+# 4) Países e Cidades (CSV local/remoto)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
-
-@st.cache_data(show_spinner=False)
-def load_country_centers():
-    df = pd.read_csv(COUNTRY_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
-    df.columns = [c.strip().lower() for c in df.columns]
-    c_country = "country"; c_lat = "latitude (average)"; c_lon = "longitude (average)"
-    if c_country not in df.columns or c_lat not in df.columns or c_lon not in df.columns:
-        raise RuntimeError("CSV must contain: 'Country', 'Latitude (average)', 'Longitude (average)'.")
-    df["lat"] = df[c_lat].apply(_parse_number_loose)
-    df["lon"] = df[c_lon].apply(_parse_number_loose)
-    df = df.dropna(subset=["lat", "lon"])
-    mapping = {row[c_country]: (float(row["lat"]), float(row["lon"])) for _, row in df.iterrows()}
-    return mapping, df
+WORLD_CITIES_URL = "https://raw.githubusercontent.com/joelacus/world-cities/master/world-cities.csv"
 
 @st.cache_data(show_spinner=False)
 def load_world_cities():
-    """Carrega o arquivo de cidades do mundo com coordenadas"""
+    """Carrega o arquivo de cidades do mundo com coordenadas - baixa do GitHub se necessário"""
     try:
-        df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        # Tenta carregar localmente primeiro
+        if CITIES_CSV_PATH.exists():
+            df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        else:
+            # Se não existe localmente, baixa do GitHub
+            st.info("📥 Baixando dados de cidades do mundo...")
+            df = pd.read_csv(WORLD_CITIES_URL, dtype=str, encoding="utf-8", on_bad_lines="skip")
+            
+            # Salva localmente para uso futuro
+            CITIES_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(CITIES_CSV_PATH, index=False, encoding="utf-8")
+            st.success("✅ Dados de cidades baixados e salvos localmente")
+        
         # Normaliza nomes das colunas
         df.columns = [c.strip().lower() for c in df.columns]
         
@@ -213,7 +213,9 @@ def load_world_cities():
             'lat': 'lat',
             'lng': 'lon',
             'latitude': 'lat',
-            'longitude': 'lon'
+            'longitude': 'lon',
+            'country': 'country',
+            'city': 'city'
         }
         
         # Renomeia colunas para padrão
@@ -226,6 +228,7 @@ def load_world_cities():
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             st.error(f"CSV de cidades está faltando colunas: {missing_cols}")
+            st.write("Colunas disponíveis:", df.columns.tolist())
             return pd.DataFrame()
         
         # Converte coordenadas
@@ -236,46 +239,8 @@ def load_world_cities():
         return df[['country', 'city', 'lat', 'lon']]
     except Exception as e:
         st.error(f"Erro ao carregar cidades: {e}")
-        return pd.DataFrame()
-
-@st.cache_data(show_spinner=False)
-def get_cities_by_country(country_name):
-    """Retorna lista de cidades para um país específico"""
-    cities_df = load_world_cities()
-    if cities_df.empty:
-        return []
-    
-    # Filtra cidades pelo país
-    country_cities = cities_df[cities_df['country'].str.strip().str.lower() == country_name.strip().lower()]
-    
-    # Remove duplicatas e ordena
-    unique_cities = country_cities[['city', 'lat', 'lon']].drop_duplicates(subset=['city'])
-    unique_cities = unique_cities.sort_values('city')
-    
-    return unique_cities.to_dict('records')
-
-def find_city_coordinates(country_name, city_name):
-    """Encontra coordenadas para uma cidade específica"""
-    cities_df = load_world_cities()
-    if cities_df.empty:
-        return None, None
-    
-    match = cities_df[
-        (cities_df['country'].str.strip().str.lower() == country_name.strip().lower()) &
-        (cities_df['city'].str.strip().str.lower() == city_name.strip().lower())
-    ]
-    
-    if not match.empty:
-        return match.iloc[0]['lat'], match.iloc[0]['lon']
-    
-    return None, None
-
-COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
-WORLD_CITIES = load_world_cities()
-COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
-
-def _countries_with_global_first(names: List[str]):
-    return (["Global"] + [n for n in names if n != "Global"]) if "Global" in names else (["Global"] + names)
+        # Fallback: retorna DataFrame vazio mas com as colunas esperadas
+        return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5) Header
