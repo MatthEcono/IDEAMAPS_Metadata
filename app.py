@@ -43,11 +43,15 @@ if _logo_b64:
     )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 0.1) FLASH PERSISTENTE
+# 0.1) FLASH + POPUP PÓS-SUBMISSÃO
 # ──────────────────────────────────────────────────────────────────────────────
 ss = st.session_state
 if "_flash" not in ss:
     ss._flash = None
+if "_post_submit" not in ss:
+    ss._post_submit = False
+if "_post_submit_msg" not in ss:
+    ss._post_submit_msg = ""
 
 def flash(message: str, level: str = "success"):
     ss._flash = {"msg": message, "level": level}
@@ -65,7 +69,28 @@ def show_flash():
             ss._flash = None
             st.rerun()
 
+def show_post_submit_dialog():
+    if ss.get("_post_submit", False):
+        try:
+            @st.dialog("Submission received")
+            def _dlg():
+                st.success(ss.get("_post_submit_msg") or "✅ Output submission queued for review!")
+                st.caption("Your submission is now in the review queue.")
+                if st.button("OK", type="primary"):
+                    ss._post_submit = False
+                    ss._post_submit_msg = ""
+                    st.rerun()
+            _dlg()
+        except Exception:
+            with st.container(border=True):
+                st.success(ss.get("_post_submit_msg") or "✅ Output submission queued for review!")
+                if st.button("OK", type="primary"):
+                    ss._post_submit = False
+                    ss._post_submit_msg = ""
+                    st.rerun()
+
 show_flash()
+show_post_submit_dialog()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) SHEETS
@@ -502,6 +527,7 @@ def clear_form():
         "use_same_countries_for_output"
     ]:
         if k in ss: del ss[k]
+    # NÃO limpar flags do popup
 
 def render_cities_list(title="Added cities"):
     if ss.form_data["cities"]:
@@ -583,7 +609,6 @@ if is_other_project:
             st.write(""); st.write("")
             st.button("➕ Add City", use_container_width=True, on_click=_cb_add_new_city)
 
-        # Lista logo abaixo do Add City
         render_cities_list("Added cities (project)")
 
     new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
@@ -649,7 +674,6 @@ if output_countries and not is_global:
             st.write(""); st.write("")
             st.button("➕ Add City", use_container_width=True, on_click=_cb_add_output_city)
 
-        # Lista logo abaixo do Add City
         render_cities_list("Added cities")
 elif is_global:
     st.info("🌍 Global coverage selected - city selection is disabled")
@@ -760,58 +784,121 @@ def _cb_submit():
                     }
                     _append_row(wsP, PROJECTS_HEADERS, rowP)
 
-        # 2) Gravar output
+        # 2) Gravar output — UMA LINHA POR PAÍS
         wsO, errO = ws_outputs()
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs.")
             return
 
         output_countries_list = ss.get("output_countries") or []
-        is_global_local = "Global" in output_countries_list
-        available_countries = [c for c in output_countries_list if c not in ["Global", "Other: ______"]]
-
-        lat_o, lon_o = (None, None)
-        if not is_global_local and available_countries:
-            if available_countries[0] in COUNTRY_CENTER_FULL:
-                lat_o, lon_o = COUNTRY_CENTER_FULL[available_countries[0]]
-
-        output_cities_str = ", ".join(ss.form_data["cities"])
-        output_countries_str = ", ".join(output_countries_list)
-
         final_years_sorted_desc = sorted(set(ss.get("years_selected") or []), reverse=True)
         final_years_str = ",".join(str(y) for y in final_years_sorted_desc) if final_years_sorted_desc else ""
 
-        rowO = {
-            "project": (ss.get("project_tax_other","").strip() if is_other_project else ss.get("project_tax_sel")),
-            "output_title": ss.get("output_title",""),
-            "output_type": ("" if (ss.get("output_type_sel","").startswith("Other")) else ss.get("output_type_sel","")),
-            "output_type_other": (ss.get("output_type_other","") if (ss.get("output_type_sel","").startswith("Other")) else ""),
-            "output_data_type": (ss.get("output_data_type","") if ss.get("output_type_sel")=="Dataset" else ""),
-            "output_url": ss.get("output_url",""),
-            "output_country": output_countries_str,
-            "output_country_other": (ss.get("output_country_other","") if "Other: ______" in output_countries_list else ""),
-            "output_city": output_cities_str,
-            "output_year": final_years_str,
-            "output_desc": ss.get("output_desc",""),
-            "output_contact": ss.get("output_contact",""),
-            "output_email": "",
-            "output_linkedin": ss.get("output_linkedin",""),
-            "project_url": (ss.get("project_url_for_output") or (ss.get("new_project_url") if is_other_project else "")),
-            "submitter_email": ss.get("submitter_email",""),
-            "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
-            "approved": "FALSE",
-            "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
-            "lat": lat_o if lat_o is not None else "",
-            "lon": lon_o if lon_o is not None else "",
-        }
+        # Utilidades para cidades por país
+        def _cities_for_country(country_name: str):
+            out = []
+            for pair in ss.form_data["cities"]:
+                if "—" in pair:
+                    ctry, city = [p.strip() for p in pair.split("—", 1)]
+                    if ctry == country_name:
+                        out.append(pair)  # mantém no formato "País — Cidade"
+            return ", ".join(out)
 
-        okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
-        if okO2:
-            flash("✅ Output submission queued for review!", "success")
+        wrote_any = False
+
+        # Caso Global → uma linha
+        if "Global" in output_countries_list:
+            rowO = {
+                "project": (ss.get("project_tax_other","").strip() if is_other_project else ss.get("project_tax_sel")),
+                "output_title": ss.get("output_title",""),
+                "output_type": ("" if (ss.get("output_type_sel","").startswith("Other")) else ss.get("output_type_sel","")),
+                "output_type_other": (ss.get("output_type_other","") if (ss.get("output_type_sel","").startswith("Other")) else ""),
+                "output_data_type": (ss.get("output_data_type","") if ss.get("output_type_sel")=="Dataset" else ""),
+                "output_url": ss.get("output_url",""),
+                "output_country": "Global",
+                "output_country_other": "",
+                "output_city": ", ".join(ss.form_data["cities"]),  # todas as cidades informadas
+                "output_year": final_years_str,
+                "output_desc": ss.get("output_desc",""),
+                "output_contact": ss.get("output_contact",""),
+                "output_email": "",
+                "output_linkedin": ss.get("output_linkedin",""),
+                "project_url": (ss.get("project_url_for_output") or (ss.get("new_project_url") if is_other_project else "")),
+                "submitter_email": ss.get("submitter_email",""),
+                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
+                "approved": "FALSE",
+                "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                "lat": "", "lon": "",
+            }
+            _append_row(wsO, OUTPUTS_HEADERS, rowO)
+            wrote_any = True
+
+        # Caso Other: ______ → uma linha usando o texto digitado
+        if "Other: ______" in output_countries_list:
+            other_txt = ss.get("output_country_other","").strip()
+            rowO = {
+                "project": (ss.get("project_tax_other","").strip() if is_other_project else ss.get("project_tax_sel")),
+                "output_title": ss.get("output_title",""),
+                "output_type": ("" if (ss.get("output_type_sel","").startswith("Other")) else ss.get("output_type_sel","")),
+                "output_type_other": (ss.get("output_type_other","") if (ss.get("output_type_sel","").startswith("Other")) else ""),
+                "output_data_type": (ss.get("output_data_type","") if ss.get("output_type_sel")=="Dataset" else ""),
+                "output_url": ss.get("output_url",""),
+                "output_country": other_txt or "Other",
+                "output_country_other": other_txt,
+                "output_city": ", ".join(ss.form_data["cities"]),  # sem como geocodificar; mantém todas
+                "output_year": final_years_str,
+                "output_desc": ss.get("output_desc",""),
+                "output_contact": ss.get("output_contact",""),
+                "output_email": "",
+                "output_linkedin": ss.get("output_linkedin",""),
+                "project_url": (ss.get("project_url_for_output") or (ss.get("new_project_url") if is_other_project else "")),
+                "submitter_email": ss.get("submitter_email",""),
+                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
+                "approved": "FALSE",
+                "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                "lat": "", "lon": "",
+            }
+            _append_row(wsO, OUTPUTS_HEADERS, rowO)
+            wrote_any = True
+
+        # Países “normais” → uma linha por país com lat/lon do centro do país
+        normal_countries = [c for c in output_countries_list if c not in ["Global", "Other: ______"]]
+        for country in normal_countries:
+            lat_o, lon_o = COUNTRY_CENTER_FULL.get(country, (None, None))
+            cities_for_this = _cities_for_country(country)
+            rowO = {
+                "project": (ss.get("project_tax_other","").strip() if is_other_project else ss.get("project_tax_sel")),
+                "output_title": ss.get("output_title",""),
+                "output_type": ("" if (ss.get("output_type_sel","").startswith("Other")) else ss.get("output_type_sel","")),
+                "output_type_other": (ss.get("output_type_other","") if (ss.get("output_type_sel","").startswith("Other")) else ""),
+                "output_data_type": (ss.get("output_data_type","") if ss.get("output_type_sel")=="Dataset" else ""),
+                "output_url": ss.get("output_url",""),
+                "output_country": country,
+                "output_country_other": "",
+                "output_city": cities_for_this,  # só as cidades desse país
+                "output_year": final_years_str,
+                "output_desc": ss.get("output_desc",""),
+                "output_contact": ss.get("output_contact",""),
+                "output_email": "",
+                "output_linkedin": ss.get("output_linkedin",""),
+                "project_url": (ss.get("project_url_for_output") or (ss.get("new_project_url") if is_other_project else "")),
+                "submitter_email": ss.get("submitter_email",""),
+                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
+                "approved": "FALSE",
+                "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                "lat": lat_o if lat_o is not None else "",
+                "lon": lon_o if lon_o is not None else "",
+            }
+            _append_row(wsO, OUTPUTS_HEADERS, rowO)
+            wrote_any = True
+
+        if wrote_any:
+            ss._post_submit = True
+            ss._post_submit_msg = "✅ Output submission queued for review!"
             clear_form()
             st.rerun()
         else:
-            st.error(f"⚠️ Error saving output: {msgO2}")
+            st.error("⚠️ Could not write any output rows. Check your selections.")
     except Exception as e:
         st.error(f"An error occurred: {str(e)}")
 
@@ -819,3 +906,4 @@ with col1:
     st.button("✅ Submit for Review", use_container_width=True, type="primary", on_click=_cb_submit)
 with col2:
     st.button("🗑️ Clear Form", use_container_width=True, type="secondary", on_click=_cb_clear)
+
