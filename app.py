@@ -469,22 +469,7 @@ else:
 # 9) SUBMISSÃO: somente OUTPUT (grava lat/lon + limpeza segura pós-submit)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# ===== STATE INIT =====
-if "city_list_output" not in st.session_state:
-    st.session_state.city_list_output = []
-if "map_center" not in st.session_state:
-    st.session_state.map_center = None
-if "map_zoom" not in st.session_state:
-    st.session_state.map_zoom = 2
-if "_clear_city_field_out" not in st.session_state:
-    st.session_state._clear_city_field_out = False
-if "_clear_city_field_newproj" not in st.session_state:
-    st.session_state._clear_city_field_newproj = False
-# flag para fazer reset na *próxima* execução (safe)
-if "_pending_form_reset" not in st.session_state:
-    st.session_state._pending_form_reset = False
-
-# Conjunto de chaves do formulário que serão limpas
+# --- helpers de reset ---
 _FORM_KEYS = {
     "submitter_email","project_tax_sel","project_tax_other",
     "new_project_url","new_project_contact","new_project_countries",
@@ -501,19 +486,33 @@ _FORM_KEYS = {
 def _really_clear_output_form_state():
     """Apaga as chaves do formulário do session_state (modo seguro)."""
     for k in list(_FORM_KEYS):
-        if k in st.session_state:
-            st.session_state.pop(k, None)
-    # extras
+        st.session_state.pop(k, None)
     st.session_state.pop("city_list_output", None)
     st.session_state.pop("map_center", None)
     st.session_state["map_zoom"] = 2
     st.session_state["_clear_city_field_out"] = False
     st.session_state["_clear_city_field_newproj"] = False
 
-# Se o submit anterior pediu reset, limpamos AGORA (antes de desenhar widgets)
+# Flag de reset pendente (default)
+if "_pending_form_reset" not in st.session_state:
+    st.session_state._pending_form_reset = False
+
+# ⚠️ Faça o reset **antes** de inicializar qualquer estado
 if st.session_state._pending_form_reset:
     _really_clear_output_form_state()
     st.session_state._pending_form_reset = False
+
+# ===== STATE INIT ===== (agora é seguro recriar padrões)
+if "city_list_output" not in st.session_state:
+    st.session_state.city_list_output = []
+if "map_center" not in st.session_state:
+    st.session_state.map_center = None
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 2
+if "_clear_city_field_out" not in st.session_state:
+    st.session_state._clear_city_field_out = False
+if "_clear_city_field_newproj" not in st.session_state:
+    st.session_state._clear_city_field_newproj = False
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -575,7 +574,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 else:
                     st.warning("Select a valid country and type a city.")
 
-        if st.session_state.city_list_output:
+        if st.session_state.get("city_list_output"):
             st.caption("Cities added to NEW project:")
             for i, it in enumerate(st.session_state.city_list_output):
                 c1, c2 = st.columns([6,1])
@@ -649,7 +648,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             else:
                 st.warning("Choose a valid country and type a city.")
 
-    if st.session_state.city_list_output:
+    if st.session_state.get("city_list_output"):
         st.caption("Cities added to OUTPUT:")
         for i, it in enumerate(st.session_state.city_list_output):
             c1, c2 = st.columns([6,1])
@@ -659,7 +658,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     st.session_state.city_list_output.pop(i); st.rerun()
 
     # Mapa de previsualização
-    if st.session_state.map_center:
+    if st.session_state.get("map_center"):
         m = folium.Map(
             location=st.session_state.map_center,
             zoom_start=st.session_state.map_zoom,
@@ -669,7 +668,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             location=st.session_state.map_center, radius=6, color="#2563eb",
             fill=True, fill_opacity=0.9, tooltip=f"{output_country}"
         ).add_to(m)
-        for pair in st.session_state.city_list_output:
+        for pair in st.session_state.get("city_list_output", []):
             if "—" in pair:
                 ctry, cty = [p.strip() for p in pair.split("—",1)]
                 latlon = COUNTRY_CENTER_FULL.get(ctry)
@@ -697,7 +696,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             st.warning("Please provide the submitter email."); st.stop()
         if not output_title.strip():
             st.warning("Please provide the Output Name."); st.stop()
-        if is_other_project and not (st.session_state.city_list_output or st.session_state.get("new_project_countries")):
+        if is_other_project and not (st.session_state.get("city_list_output") or st.session_state.get("new_project_countries")):
             st.warning("For a new project (Other), please add at least one country/city."); st.stop()
 
         # 1) Se "Other", registrar projeto (fila)
@@ -705,7 +704,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             wsP, errP = ws_projects()
             if errP or wsP is None:
                 st.error(errP or "Worksheet unavailable for projects."); st.stop()
-            pairsP = st.session_state.city_list_output[:] if st.session_state.city_list_output else [
+            pairsP = st.session_state.get("city_list_output", [])[:] or [
                 f"{c} — " for c in (st.session_state.get("new_project_countries") or [])
             ]
             ok_allP, msg_anyP = True, None
@@ -738,7 +737,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         if isinstance(output_country, str) and (output_country in COUNTRY_CENTER_FULL):
             lat_o, lon_o = COUNTRY_CENTER_FULL[output_country]
 
-        output_cities_str = ", ".join(st.session_state.city_list_output) if st.session_state.city_list_output else ""
+        output_cities_str = ", ".join(st.session_state.get("city_list_output", [])) if st.session_state.get("city_list_output") else ""
 
         rowO = {
             "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
@@ -766,8 +765,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
             st.success("✅ Output submission queued")
-            # não limpamos widgets aqui; apenas sinalizamos e rerun
+            # Em vez de limpar widgets agora (ilegal), pedimos reset e rerun
             st.session_state._pending_form_reset = True
             st.rerun()
         else:
             st.error(f"⚠️ {msgO2}")
+
