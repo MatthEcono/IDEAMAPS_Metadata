@@ -58,8 +58,7 @@ for k, v in {
     "_selected_output_idx": None,
     "_want_open_dialog": False,
     "_outputs_editor_key_version": 0,
-    # seleção e ação (sem popup)
-    "_table_selection": None,          # índice selecionado
+    "_table_selection": None,
     "_action_reason": "",
 }.items():
     if k not in ss:
@@ -248,6 +247,44 @@ def _countries_with_global_first(names: List[str]):
         return ["Global"] + [n for n in names if n != "Global"]
     else:
         return ["Global"] + names
+
+# ===== Validations =====
+def _missing_list_to_md(missing: list[str]) -> str:
+    if not missing:
+        return ""
+    items = "\n".join([f"- {m}" for m in missing])
+    return f"**Please complete the following before continuing:**\n\n{items}"
+
+def _show_missing(missing: list[str]):
+    if missing:
+        st.warning(_missing_list_to_md(missing))
+
+def _collect_missing_for_submit(state: dict, *, is_edit_mode: bool, cities: list[str]) -> list[str]:
+    missing = []
+    if not (state.get("submitter_email") or "").strip():
+        missing.append("Submitter email")
+    if not (state.get("output_title") or "").strip():
+        missing.append("Output name")
+    if not (state.get("output_countries") or []):
+        missing.append("At least one country")
+    if (state.get("output_type_sel") == "Dataset") and (state.get("output_data_type") in (None, "", SELECT_PLACEHOLDER)):
+        missing.append("Data type (for datasets)")
+    if (state.get("project_tax_sel") or "").startswith("Other") and not (state.get("project_tax_other") or "").strip():
+        missing.append("Project name (when selecting 'Other')")
+    if is_edit_mode:
+        if not (ss.get("_edit_target_row") or None):
+            missing.append("Select a row to edit (use 'Edit selected' above the form)")
+        if not (ss.get("_edit_reason") or "").strip():
+            missing.append("Reason for edit (provided when you clicked 'Edit selected')")
+    return missing
+
+def _collect_missing_for_table_action(selection_idx: int | None, reason: str, action_label: str) -> list[str]:
+    missing = []
+    if selection_idx is None:
+        missing.append("Select one row in the table")
+    if not (reason or "").strip():
+        missing.append(f"Reason for {action_label.lower()}")
+    return missing
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 4) Países (CSV local)
@@ -516,88 +553,87 @@ else:
         # seleção única
         sel_idxs = [i for i, v in enumerate(edited[SELECT_COL].tolist()) if bool(v)] if SELECT_COL in edited.columns else []
         if sel_idxs:
-            ss._table_selection = int(sel_idxs[0])  # fica só com a primeira seleção
+            ss._table_selection = int(sel_idxs[0])  # só a primeira seleção
 
         st.write("")  # espaçamento
         ss._action_reason = st.text_input("Reason (required for Edit or Remove)", value=ss._action_reason)
 
         colA, colB = st.columns([1,1])
 
-        def _prepopulate_submission_from_row(row_dict: dict, reason: str, sheet_row: int):
-            # limpa e ativa modo edição
-            ss[wkey("submitter_email")] = ""  # quem edita deve informar o seu e-mail
-            proj_name = (row_dict.get("project") or "").strip()
-            ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
-            if ss[wkey("project_tax_sel")].startswith("Other"):
-                ss[wkey("project_tax_other")] = proj_name
-            ss[wkey("output_type_sel")] = (row_dict.get("output_type") or "") or OUTPUT_TYPES[0]
-            ss[wkey("output_type_other")] = (row_dict.get("output_type_other") or "")
-            if ss[wkey("output_type_sel")] == "Dataset":
-                ss[wkey("output_data_type")] = (row_dict.get("output_data_type") or SELECT_PLACEHOLDER)
-            ss[wkey("output_title")] = (row_dict.get("output_title") or "")
-            ss[wkey("output_url")]   = (row_dict.get("output_url") or "")
-            # países
-            countries = []
-            oc = (row_dict.get("output_country") or "").strip()
-            if oc:
-                parts = [p.strip() for p in oc.split(",") if p.strip()]
-                countries = parts if len(parts) > 1 else [oc]
-            ss[wkey("output_countries")] = countries
-            # cidades
-            ss.form_data["cities"] = []
-            ocity = (row_dict.get("output_city") or "").strip()
-            if ocity:
-                parts = [p.strip() for p in ocity.split(",") if p.strip()]
-                for p in parts:
-                    if "—" in p:
-                        ss.form_data["cities"].append(p)
-                    else:
-                        base_country = countries[0] if countries else ""
-                        ss.form_data["cities"].append(f"{base_country} — {p}" if base_country else p)
-            # anos
-            years_txt = (row_dict.get("output_year") or "").strip()
-            years = []
-            if years_txt:
-                for y in years_txt.split(","):
-                    y = y.strip()
-                    if y.isdigit():
-                        years.append(int(y))
-            ss[wkey("years_selected")] = years
-            # outros
-            ss[wkey("output_desc")]            = (row_dict.get("output_desc") or "")
-            ss[wkey("output_contact")]         = (row_dict.get("output_contact") or "")
-            ss[wkey("output_linkedin")]        = (row_dict.get("output_linkedin") or "")
-            ss[wkey("project_url_for_output")] = (row_dict.get("project_url") or "")
-            # flags de edição
-            ss["_edit_mode"]       = True
-            ss["_edit_reason"]     = reason
-            ss["_edit_target_row"] = int(sheet_row) if sheet_row else None
-
+        # ----- EDIT SELECTED -----
         with colA:
             if st.button("✏️ Edit selected", use_container_width=True):
-                if ss._table_selection is None:
-                    st.error("Select one row first.")
-                elif not ss._action_reason.strip():
-                    st.error("Reason is required.")
+                missing = _collect_missing_for_table_action(ss._table_selection, ss._action_reason, "Edit")
+                if missing:
+                    _show_missing(missing)
                 else:
                     base_row = df_base.iloc[ss._table_selection].to_dict()
                     try:
                         sheet_row = int(df_base.iloc[ss._table_selection]["sheet_row"])
                     except Exception:
                         sheet_row = None
-                    _prepopulate_submission_from_row(base_row, ss._action_reason.strip(), sheet_row)
+
+                    # Pré-popula o formulário
+                    ss[wkey("submitter_email")] = ""  # quem edita informa seu e-mail
+                    proj_name = (base_row.get("project") or "").strip()
+                    ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
+                    if ss[wkey("project_tax_sel")].startswith("Other"):
+                        ss[wkey("project_tax_other")] = proj_name
+                    ss[wkey("output_type_sel")] = (base_row.get("output_type") or "") or OUTPUT_TYPES[0]
+                    ss[wkey("output_type_other")] = (base_row.get("output_type_other") or "")
+                    if ss[wkey("output_type_sel")] == "Dataset":
+                        ss[wkey("output_data_type")] = (base_row.get("output_data_type") or SELECT_PLACEHOLDER)
+                    ss[wkey("output_title")] = (base_row.get("output_title") or "")
+                    ss[wkey("output_url")]   = (base_row.get("output_url") or "")
+                    # países
+                    countries = []
+                    oc = (base_row.get("output_country") or "").strip()
+                    if oc:
+                        parts = [p.strip() for p in oc.split(",") if p.strip()]
+                        countries = parts if len(parts) > 1 else [oc]
+                    ss[wkey("output_countries")] = countries
+                    # cidades
+                    ss.form_data["cities"] = []
+                    ocity = (base_row.get("output_city") or "").strip()
+                    if ocity:
+                        parts = [p.strip() for p in ocity.split(",") if p.strip()]
+                        for p in parts:
+                            if "—" in p:
+                                ss.form_data["cities"].append(p)
+                            else:
+                                base_country = countries[0] if countries else ""
+                                ss.form_data["cities"].append(f"{base_country} — {p}" if base_country else p)
+                    # anos
+                    years_txt = (base_row.get("output_year") or "").strip()
+                    years = []
+                    if years_txt:
+                        for y in years_txt.split(","):
+                            y = y.strip()
+                            if y.isdigit():
+                                years.append(int(y))
+                    ss[wkey("years_selected")] = years
+                    # outros
+                    ss[wkey("output_desc")]            = (base_row.get("output_desc") or "")
+                    ss[wkey("output_contact")]         = (base_row.get("output_contact") or "")
+                    ss[wkey("output_linkedin")]        = (base_row.get("output_linkedin") or "")
+                    ss[wkey("project_url_for_output")] = (base_row.get("project_url") or "")
+                    # flags de edição
+                    ss["_edit_mode"]       = True
+                    ss["_edit_reason"]     = ss._action_reason.strip()
+                    ss["_edit_target_row"] = int(sheet_row) if sheet_row else None
+
                     flash("✏️ Edit mode enabled. The form below is pre-filled — complete your email and submit.", "info")
                     ss._outputs_editor_key_version += 1
                     ss._table_selection = None
                     ss._action_reason = ""
                     st.rerun()
 
+        # ----- REMOVE SELECTED -----
         with colB:
             if st.button("🗑️ Remove selected", use_container_width=True):
-                if ss._table_selection is None:
-                    st.error("Select one row first.")
-                elif not ss._action_reason.strip():
-                    st.error("Reason is required.")
+                missing = _collect_missing_for_table_action(ss._table_selection, ss._action_reason, "Remove")
+                if missing:
+                    _show_missing(missing)
                 else:
                     base_row = df_base.iloc[ss._table_selection].to_dict()
                     try:
@@ -798,7 +834,7 @@ output_contact = st.text_input("Name & institution of person responsible", key=w
 output_linkedin = st.text_input("LinkedIn address of contact", key=wkey("output_linkedin"))
 project_url_for_output = st.text_input("Project URL (optional, if different)", key=wkey("project_url_for_output"))
 
-# Se projeto é "Other": só URL/contato (países/cidades vêm do coverage)
+# Se projeto é "Other": reuso países/cidades do coverage
 if is_other_project:
     st.subheader("New Project Details (countries/cities reused from coverage above)")
     new_project_url = st.text_input("Project URL (optional)", key=wkey("new_project_url"))
@@ -823,25 +859,19 @@ def _cb_submit():
         "output_type_other"
     ]}
 
-    errors = []
-    if not (state["submitter_email"] or "").strip():
-        errors.append("❌ Submitter email is required")
-    if not (state["output_title"] or "").strip():
-        errors.append("❌ Output name is required")
-    if not state["output_countries"]:
-        errors.append("❌ At least one country must be selected")
-    if state["output_type_sel"] == "Dataset" and (state["output_data_type"] in (None, "", SELECT_PLACEHOLDER)):
-        errors.append("❌ Data type is required for datasets")
-    is_other_project_local = (state["project_tax_sel"] or "").startswith("Other")
-    if is_other_project_local and not (state["project_tax_other"] or "").strip():
-        errors.append("❌ Project name is required when selecting 'Other'")
-
-    if errors:
-        for e in errors: st.error(e)
+    is_edit_mode_local = bool(ss.get("_edit_mode"))
+    missing = _collect_missing_for_submit(
+        state,
+        is_edit_mode=is_edit_mode_local,
+        cities=ss.form_data.get("cities", [])
+    )
+    if missing:
+        _show_missing(missing)
         return
 
     try:
         # 1) Projeto "Other": grava por país (e por cidade)
+        is_other_project_local = (state["project_tax_sel"] or "").startswith("Other")
         if is_other_project_local:
             wsP, errP = ws_projects()
             if errP or wsP is None:
@@ -908,7 +938,7 @@ def _cb_submit():
 
         def _row_base(country_value: str, lat_o, lon_o, other_txt=""):
             rb = {
-                "project": ((state["project_tax_other"] or "").strip() if is_other_project_local else state["project_tax_sel"]),
+                "project": ((state["project_tax_other"] or "").strip() if (state["project_tax_sel"] or "").startswith("Other") else state["project_tax_sel"]),
                 "output_title": state["output_title"] or "",
                 "output_type": ("" if ((state["output_type_sel"] or "").startswith("Other")) else (state["output_type_sel"] or "")),
                 "output_type_other": ((state["output_type_other"] or "") if ((state["output_type_sel"] or "").startswith("Other")) else ""),
@@ -921,7 +951,7 @@ def _cb_submit():
                 "output_contact": state["output_contact"] or "",
                 "output_email": "",
                 "output_linkedin": state["output_linkedin"] or "",
-                "project_url": (state["project_url_for_output"] or (state["new_project_url"] if is_other_project_local else "")),
+                "project_url": (state["project_url_for_output"] or (state["new_project_url"] if (state["project_tax_sel"] or "").startswith("Other") else "")),
                 "submitter_email": state["submitter_email"] or "",
                 "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                 "lat": lat_o if lat_o is not None else "",
@@ -953,7 +983,6 @@ def _cb_submit():
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
-        # países normais
         normal_countries = [c for c in output_countries_list if c not in ["Global", "Other: ______"]]
         for country in normal_countries:
             lat_o, lon_o = COUNTRY_CENTER_FULL.get(country, (None, None))
