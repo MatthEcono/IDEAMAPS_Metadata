@@ -49,11 +49,14 @@ ss = st.session_state
 if "_flash" not in ss: ss._flash = None
 if "_post_submit" not in ss: ss._post_submit = False
 if "_post_submit_msg" not in ss: ss._post_submit_msg = ""
-if "_form_version" not in ss: ss._form_version = 1   # <- versão do formulário
+if "_form_version" not in ss: ss._form_version = 1
 if "form_data" not in ss: ss.form_data = {"cities": []}
+if "_edit_mode" not in ss: ss._edit_mode = False
+if "_edit_reason" not in ss: ss._edit_reason = ""
+if "_edit_target_row" not in ss: ss._edit_target_row = None
 
 def wkey(name: str) -> str:
-    """Gera uma chave única por versão para forçar reset dos widgets após submit."""
+    """Chave versionada para resetar widgets após submissão."""
     return f"{name}__v{ss._form_version}"
 
 def flash(message: str, level: str = "success"):
@@ -282,7 +285,7 @@ if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Carregamento (apenas aprovados)
+# 6) Carregamento (apenas aprovados) — outputs com sheet_row
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -306,18 +309,30 @@ def load_projects_public():
 @st.cache_data(show_spinner=False)
 def load_outputs_public():
     ws, err = ws_outputs()
-    if err or ws is None: return pd.DataFrame(), False, err
+    if err or ws is None:
+        return pd.DataFrame(), False, err
     try:
-        df = pd.DataFrame(ws.get_all_records())
-        if df.empty:
-            return df, True, None
+        vals = ws.get_all_values()
+        if not vals or len(vals) < 2:
+            return pd.DataFrame(), True, None
+        header = vals[0]
+        rows = vals[1:]
+        recs = []
+        for i, r in enumerate(rows, start=2):  # sheet row index (header is 1)
+            data = {h: (r[j] if j < len(r) else "") for j, h in enumerate(header)}
+            data["sheet_row"] = i
+            recs.append(data)
+        df = pd.DataFrame(recs)
+
         for c in OUTPUTS_HEADERS:
             if c not in df.columns:
                 df[c] = ""
+
         df["approved"] = df["approved"].astype(str).str.upper().isin(["TRUE","1","YES"])
         df = df[df["approved"]].copy()
-        df["lat"] = df["lat"].apply(_as_float)
-        df["lon"] = df["lon"].apply(_as_float)
+
+        df["lat"] = df.get("lat", "").apply(_as_float)
+        df["lon"] = df.get("lon", "").apply(_as_float)
 
         def _fallback_coords(row):
             if pd.notna(row.get("lat")) and pd.notna(row.get("lon")):
@@ -389,7 +404,7 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Tabela de outputs aprovados
+# 8) Tabela de outputs aprovados — com Edit/Remove
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -414,9 +429,14 @@ else:
             if c not in df_base.columns:
                 df_base[c] = ""
 
-        df_preview = df_base[preview_cols].copy()
+        df_preview = df_base[preview_cols + ["sheet_row"]].copy()
         details_col = "See full information"
+        ACTION_COL = "Action"
+        REASON_COL = "Reason"
+
         df_preview[details_col] = False
+        df_preview[ACTION_COL] = "—"
+        df_preview[REASON_COL] = ""
 
         editor_key = f"outputs_editor_{ss._outputs_editor_key_version}"
         edited = st.data_editor(
@@ -424,21 +444,26 @@ else:
             key=editor_key,
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols,
+            disabled=preview_cols + ["sheet_row"],
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
                 "output_city": st.column_config.TextColumn("output_city"),
                 "output_type": st.column_config.TextColumn("output_type"),
                 "output_data_type": st.column_config.TextColumn("output_data_type"),
+                "sheet_row": st.column_config.TextColumn("sheet_row"),
                 details_col: st.column_config.CheckboxColumn(details_col, help="Open details for this row"),
+                ACTION_COL: st.column_config.SelectboxColumn(
+                    ACTION_COL, options=["—","Edit","Remove"], help="Choose Edit or Remove for this row"
+                ),
+                REASON_COL: st.column_config.TextColumn(REASON_COL, help="Required for Edit/Remove"),
             }
         )
 
+        # Handler dos detalhes
         selected_idx_list = []
         if details_col in edited.columns:
             selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
-
         if selected_idx_list and not ss._want_open_dialog:
             ss._selected_output_idx = int(selected_idx_list[0])
             ss._want_open_dialog = True
@@ -492,16 +517,141 @@ else:
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
+        # Handler Edit/Remove
+        chosen = None
+        for i in range(len(edited)):
+            act = str(edited.at[i, ACTION_COL]).strip()
+            if act in ("Edit","Remove"):
+                chosen = (i, act)
+                break
+
+        def _prepopulate_submission_from_row(row_dict: dict, reason: str, sheet_row: int):
+            """Pré-preenche submissão e ativa modo edição."""
+            ss[wkey("submitter_email")] = ""  # quem edita deve preencher seu email
+
+            proj_name = (row_dict.get("project") or "").strip()
+            ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
+            if ss[wkey("project_tax_sel")].startswith("Other"):
+                ss[wkey("project_tax_other")] = proj_name
+
+            ss[wkey("output_type_sel")] = (row_dict.get("output_type") or "")
+            if not ss[wkey("output_type_sel")]:
+                ss[wkey("output_type_sel")] = "Other: ________" if (row_dict.get("output_type_other") or "") else OUTPUT_TYPES[0]
+            ss[wkey("output_type_other")] = (row_dict.get("output_type_other") or "")
+
+            if ss[wkey("output_type_sel")] == "Dataset":
+                ss[wkey("output_data_type")] = (row_dict.get("output_data_type") or SELECT_PLACEHOLDER)
+
+            ss[wkey("output_title")] = (row_dict.get("output_title") or "")
+            ss[wkey("output_url")] = (row_dict.get("output_url") or "")
+
+            # Países
+            countries = []
+            oc = (row_dict.get("output_country") or "").strip()
+            if oc:
+                parts = [p.strip() for p in oc.split(",") if p.strip()]
+                countries = parts if len(parts) > 1 else [oc]
+            ss[wkey("output_countries")] = countries
+
+            # Cidades (mantém "País — Cidade" quando existir)
+            ss.form_data["cities"] = []
+            ocity = (row_dict.get("output_city") or "").strip()
+            if ocity:
+                parts = [p.strip() for p in ocity.split(",") if p.strip()]
+                for p in parts:
+                    if "—" in p:
+                        ss.form_data["cities"].append(p)
+                    else:
+                        base_country = countries[0] if countries else ""
+                        if base_country:
+                            ss.form_data["cities"].append(f"{base_country} — {p}")
+                        else:
+                            ss.form_data["cities"].append(p)
+
+            years_txt = (row_dict.get("output_year") or "").strip()
+            years = []
+            if years_txt:
+                for y in years_txt.split(","):
+                    y = y.strip()
+                    if y.isdigit():
+                        years.append(int(y))
+            ss[wkey("years_selected")] = years
+
+            ss[wkey("output_desc")] = (row_dict.get("output_desc") or "")
+            ss[wkey("output_contact")] = (row_dict.get("output_contact") or "")
+            ss[wkey("output_linkedin")] = (row_dict.get("output_linkedin") or "")
+            ss[wkey("project_url_for_output")] = (row_dict.get("project_url") or "")
+
+            ss["_edit_mode"] = True
+            ss["_edit_reason"] = reason
+            ss["_edit_target_row"] = int(sheet_row) if sheet_row else None
+
+            st.info("Edit mode: the submission form below was pre-filled. Complete your email and click Submit for Review.")
+            st.rerun()
+
+        if chosen:
+            i, act = chosen
+            reason = str(edited.at[i, REASON_COL]).strip()
+            if not reason:
+                st.error("Please fill the Reason for Edit/Remove.")
+            else:
+                base_row = df_base.iloc[i].to_dict()
+                try:
+                    sheet_row = int(edited.at[i, "sheet_row"])
+                except Exception:
+                    sheet_row = None
+
+                if act == "Remove":
+                    wsO, errO = ws_outputs()
+                    if errO or wsO is None:
+                        st.error(errO or "Worksheet unavailable for outputs.")
+                    else:
+                        rowO = {
+                            "project": (base_row.get("project") or ""),
+                            "output_title": (base_row.get("output_title") or ""),
+                            "output_type": (base_row.get("output_type") or ""),
+                            "output_type_other": (base_row.get("output_type_other") or ""),
+                            "output_data_type": (base_row.get("output_data_type") or ""),
+                            "output_url": (base_row.get("output_url") or ""),
+                            "output_country": (base_row.get("output_country") or ""),
+                            "output_country_other": (base_row.get("output_country_other") or ""),
+                            "output_city": (base_row.get("output_city") or ""),
+                            "output_year": (base_row.get("output_year") or ""),
+                            "output_desc": (base_row.get("output_desc") or ""),
+                            "output_contact": (base_row.get("output_contact") or ""),
+                            "output_email": "",
+                            "output_linkedin": (base_row.get("output_linkedin") or ""),
+                            "project_url": (base_row.get("project_url") or ""),
+                            "submitter_email": "",
+                            "is_edit": "TRUE",
+                            "edit_target": str(sheet_row or ""),
+                            "edit_request": f"REMOVE: {reason}",
+                            "approved": "FALSE",
+                            "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                            "lat": (base_row.get("lat") if pd.notna(base_row.get("lat")) else ""),
+                            "lon": (base_row.get("lon") if pd.notna(base_row.get("lon")) else ""),
+                        }
+                        okRm, msgRm = _append_row(wsO, OUTPUTS_HEADERS, rowO)
+                        if okRm:
+                            flash("🗑️ Removal request sent for review.", "success")
+                            ss._outputs_editor_key_version += 1
+                            st.rerun()
+                        else:
+                            st.error(f"⚠️ Error creating removal request: {msgRm}")
+
+                elif act == "Edit":
+                    _prepopulate_submission_from_row(base_row, reason, sheet_row)
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT — REATIVO + UMA VEZ SÓ (REUSA PARA PROJETO "OTHER")
+# 9) SUBMISSÃO — REATIVO + UMA VEZ SÓ (REUSA PAÍSES/CIDADES)
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
 
-# Helpers de cidade
+# Helpers cidade
 def add_city(country, city_name):
-    if country and country != SELECT_PLACEHOLDER and city_name.strip():
+    if country and country != SELECT_PLACEHOLDER and (city_name or "").strip():
         for c in [x.strip() for x in city_name.split(",") if x.strip()]:
             pair = f"{country} — {c}"
             if pair not in ss.form_data["cities"]:
@@ -526,11 +676,14 @@ def render_cities_list(title="Added cities"):
                 st.button("🗑️ Remove", key=wkey(f"remove_{title}_{i}"), on_click=lambda i=i: remove_city(i))
 
 def hard_reset_form():
-    """Zera cidades e incrementa a versão -> chaves novas -> widgets zerados."""
+    """Incrementa versão: todos widgets reiniciam vazios"""
     ss.form_data = {"cities": []}
-    ss._form_version += 1   # força todos os widgets a recriarem estados vazios
+    ss._edit_mode = False
+    ss._edit_reason = ""
+    ss._edit_target_row = None
+    ss._form_version += 1
 
-# ------ Campos básicos (reativos) ------
+# Campos básicos
 st.subheader("Basic Information")
 
 submitter_email = st.text_input(
@@ -568,9 +721,8 @@ if output_type_sel.startswith("Other"):
 output_title = st.text_input("Output Name*", key=wkey("output_title"))
 output_url = st.text_input("Output URL (optional)", key=wkey("output_url"))
 
-# ------ Cobertura geográfica do output (ÚNICA — reusada para novo projeto) ------
+# Cobertura geográfica (única — serve também ao projeto "Other")
 st.subheader("Geographic Coverage")
-
 output_countries = st.multiselect(
     "Select countries (select 'Global' for worldwide coverage)*",
     options=_countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"],
@@ -582,11 +734,11 @@ output_country_other = st.text_input(
     key=wkey("output_country_other")
 ) if ("Other: ______" in (output_countries or [])) else ""
 
-# Se países selecionados (e não global), liberar cidades imediatamente
+# Cidades por país (reativo)
 if output_countries and not is_global:
     available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
     if available_countries:
-        st.write("**Add cities for this output / (and for new project if 'Other')**")
+        st.write("**Add cities (used for output and for new project if 'Other')**")
         col_country_out, col_city_out, col_btn_out = st.columns([2, 2, 1])
         with col_country_out:
             st.selectbox(
@@ -611,7 +763,35 @@ if output_countries and not is_global:
 elif is_global:
     st.info("🌍 Global coverage selected - city selection is disabled")
 
-# ------ Detalhes adicionais + Novo projeto (sem repetir país/cidade) ------
+# Preview mapa
+if ss.form_data["cities"] and not is_global:
+    st.write("**Map Preview:**")
+    available_countries = [c for c in (output_countries or []) if c not in ["Global", "Other: ______"]]
+    if available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
+        center_lat, center_lon = COUNTRY_CENTER_FULL[available_countries[0]]
+    else:
+        center_lat, center_lon = 0, 0
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=3, tiles="CartoDB positron")
+    for country in (output_countries or []):
+        if country in COUNTRY_CENTER_FULL and country not in ["Global", "Other: ______"]:
+            folium.CircleMarker(
+                location=COUNTRY_CENTER_FULL[country],
+                radius=10, popup=country, tooltip=country,
+                color="blue", fill=True, fill_opacity=0.6
+            ).add_to(m)
+    for pair in ss.form_data["cities"]:
+        if "—" in pair:
+            country, city = [p.strip() for p in pair.split("—", 1)]
+            if country in COUNTRY_CENTER_FULL:
+                folium.Marker(
+                    location=COUNTRY_CENTER_FULL[country],
+                    popup=f"{city}, {country}",
+                    tooltip=f"{city}, {country}",
+                    icon=folium.Icon(color="red", icon="info-sign")
+                ).add_to(m)
+    st_folium(m, height=300, width=None)
+
+# Informações adicionais
 st.subheader("Additional Information")
 current_year = datetime.utcnow().year
 base_years_desc = list(range(current_year, 1999, -1))
@@ -630,7 +810,7 @@ else:
     new_project_url = ""
     new_project_contact = ""
 
-# ------ Ações ------
+# Ações
 col1, col2 = st.columns([1, 1])
 
 def _cb_clear():
@@ -638,7 +818,7 @@ def _cb_clear():
     st.rerun()
 
 def _cb_submit():
-    # Leitura de estados atuais
+    # ler estado dos widgets versionados
     state = {k: ss.get(wkey(k)) for k in [
         "submitter_email","project_tax_sel","project_tax_other","output_type_sel",
         "output_data_type","output_title","output_url","output_countries",
@@ -659,23 +839,19 @@ def _cb_submit():
     is_other_project_local = (state["project_tax_sel"] or "").startswith("Other")
     if is_other_project_local and not (state["project_tax_other"] or "").strip():
         errors.append("❌ Project name is required when selecting 'Other'")
-    # Se não houver países "normais" e também não Global/Other, é erro:
-    if not state["output_countries"]:
-        errors.append("❌ Select at least one country or Global/Other")
 
     if errors:
         for e in errors: st.error(e)
         return
 
     try:
-        # 1) Registrar projeto se for "Other" — REUTILIZA output_countries + cities
+        # 1) Projeto "Other": reaproveita países/cidades do coverage
         if is_other_project_local:
             wsP, errP = ws_projects()
             if errP or wsP is None:
                 st.error(errP or "Worksheet unavailable for projects.")
                 return
 
-            # utilidade: cidades por país
             def _cities_for_country(country_name: str):
                 out = []
                 for pair in ss.form_data["cities"]:
@@ -686,12 +862,10 @@ def _cb_submit():
                 return out
 
             normal_countries = [c for c in (state["output_countries"] or []) if c not in ["Global", "Other: ______"]]
-
             if normal_countries:
-                # cria linhas por país (1 linha por país + linhas por cidade se quiser manter granular)
                 for country in normal_countries:
                     latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
-                    # linha do país (sem cidade específica)
+                    # linha por país
                     rowP_country = {
                         "country": country, "city": "", "lat": latp, "lon": lonp,
                         "project_name": (state["project_tax_other"] or "").strip(),
@@ -704,7 +878,6 @@ def _cb_submit():
                         "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                     }
                     _append_row(wsP, PROJECTS_HEADERS, rowP_country)
-
                     # linhas por cidade (se houver)
                     for city in _cities_for_country(country):
                         rowP_city = {
@@ -720,7 +893,7 @@ def _cb_submit():
                         }
                         _append_row(wsP, PROJECTS_HEADERS, rowP_city)
             else:
-                # Sem países normais (ex.: só Global/Other) → cria um registro “genérico”
+                # genérico
                 rowP_generic = {
                     "country": "", "city": "", "lat": "", "lon": "",
                     "project_name": (state["project_tax_other"] or "").strip(),
@@ -734,7 +907,7 @@ def _cb_submit():
                 }
                 _append_row(wsP, PROJECTS_HEADERS, rowP_generic)
 
-        # 2) Gravar output — UMA LINHA POR PAÍS
+        # 2) Output — 1 linha por país (+ Global/Other)
         wsO, errO = ws_outputs()
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs.")
@@ -774,11 +947,20 @@ def _cb_submit():
                 "output_linkedin": state["output_linkedin"] or "",
                 "project_url": (state["project_url_for_output"] or (state["new_project_url"] if is_other_project_local else "")),
                 "submitter_email": state["submitter_email"] or "",
-                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
-                "approved": "FALSE",
                 "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                 "lat": "", "lon": "",
             }
+            # MODO EDIÇÃO
+            if ss.get("_edit_mode"):
+                rowO["is_edit"] = "TRUE"
+                rowO["edit_target"] = str(ss.get("_edit_target_row") or "")
+                rowO["edit_request"] = ss.get("_edit_reason") or "User requested edit"
+            else:
+                rowO["is_edit"] = "FALSE"
+                rowO["edit_target"] = ""
+                rowO["edit_request"] = "New submission"
+            rowO["approved"] = "FALSE"
+
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
@@ -802,11 +984,19 @@ def _cb_submit():
                 "output_linkedin": state["output_linkedin"] or "",
                 "project_url": (state["project_url_for_output"] or (state["new_project_url"] if is_other_project_local else "")),
                 "submitter_email": state["submitter_email"] or "",
-                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
-                "approved": "FALSE",
                 "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                 "lat": "", "lon": "",
             }
+            if ss.get("_edit_mode"):
+                rowO["is_edit"] = "TRUE"
+                rowO["edit_target"] = str(ss.get("_edit_target_row") or "")
+                rowO["edit_request"] = ss.get("_edit_reason") or "User requested edit"
+            else:
+                rowO["is_edit"] = "FALSE"
+                rowO["edit_target"] = ""
+                rowO["edit_request"] = "New submission"
+            rowO["approved"] = "FALSE"
+
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
@@ -831,20 +1021,31 @@ def _cb_submit():
                 "output_linkedin": state["output_linkedin"] or "",
                 "project_url": (state["project_url_for_output"] or (state["new_project_url"] if is_other_project_local else "")),
                 "submitter_email": state["submitter_email"] or "",
-                "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
-                "approved": "FALSE",
                 "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                 "lat": lat_o if lat_o is not None else "",
                 "lon": lon_o if lon_o is not None else "",
             }
+            if ss.get("_edit_mode"):
+                rowO["is_edit"] = "TRUE"
+                rowO["edit_target"] = str(ss.get("_edit_target_row") or "")
+                rowO["edit_request"] = ss.get("_edit_reason") or "User requested edit"
+            else:
+                rowO["is_edit"] = "FALSE"
+                rowO["edit_target"] = ""
+                rowO["edit_request"] = "New submission"
+            rowO["approved"] = "FALSE"
+
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
         if wrote_any:
-            # Popup + reset total garantido por versão
             ss._post_submit = True
             ss._post_submit_msg = "✅ Output submission queued for review!"
-            hard_reset_form()   # incrementa versão -> chaves novas
+            # limpa flags de edição e reseta versão → widgets vazios
+            ss["_edit_mode"] = False
+            ss["_edit_reason"] = ""
+            ss["_edit_target_row"] = None
+            hard_reset_form()
             st.rerun()
         else:
             st.error("⚠️ Could not write any output rows. Check your selections.")
@@ -855,5 +1056,3 @@ with col1:
     st.button("✅ Submit for Review", use_container_width=True, type="primary", on_click=_cb_submit, key=wkey("btn_submit"))
 with col2:
     st.button("🗑️ Clear Form", use_container_width=True, type="secondary", on_click=_cb_clear, key=wkey("btn_clear"))
-
-
