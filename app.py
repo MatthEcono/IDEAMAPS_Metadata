@@ -727,29 +727,33 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         key="output_countries"
     )
     
+    # CORREÇÃO: Lógica simplificada para Global
     is_global = "Global" in output_countries
     if is_global:
         st.info("Global coverage selected - city fields will be disabled")
-        if len(output_countries) > 1:
-            st.session_state.output_countries = ["Global"]
-            st.rerun()
-    
+        # Não limpa automaticamente outros países - permite que o usuário decida
+
     output_country_other = ""
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage", key="output_country_other")
 
     # AUTOBUSCA DE CIDADES PARA OUTPUT
     st.markdown("**Cities covered**")
-    available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+    
+    # CORREÇÃO: Prepara países disponíveis para seleção de cidades
+    available_countries_for_cities = []
+    if output_countries:
+        available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
     
     colx1, colx2, colx3 = st.columns([2,2,1])
     with colx1:
+        # CORREÇÃO: Campo NUNCA travado, exceto quando é Global
         country_for_city = st.selectbox(
             "Country for the city",
             options=[SELECT_PLACEHOLDER] + available_countries_for_cities,
             index=0,
             key="country_for_city",
-            disabled=is_global or not available_countries_for_cities
+            disabled=is_global  # Só desabilita se for Global
         )
     with colx2:
         # Carrega cidades do país selecionado
@@ -765,10 +769,11 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "Select city",
             options=city_options_output,
             key="selected_city_output",
-            disabled=is_global
+            disabled=is_global  # Só desabilita se for Global
         )
     with colx3:
         st.write("")
+        # CORREÇÃO: Só desabilita o botão se for Global ou se não tiver seleção válida
         add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not selected_city_output or selected_city_output == SELECT_PLACEHOLDER
         if st.form_submit_button("➕ Add city to OUTPUT", disabled=add_city_disabled):
             if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and selected_city_output and selected_city_output != SELECT_PLACEHOLDER:
