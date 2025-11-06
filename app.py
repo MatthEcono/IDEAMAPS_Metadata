@@ -470,33 +470,40 @@ st.markdown("---")
 st.header("Submit Output (goes to review queue)")
 
 # Inicialização do estado
-if "form_data" not in st.session_state:
-    st.session_state.form_data = {
-        "cities": [],
-        "countries_applied": False
-    }
+if "city_list_output" not in st.session_state:
+    st.session_state.city_list_output = []
+if "_clear_city_field_out" not in st.session_state:
+    st.session_state._clear_city_field_out = False
+if "_clear_city_field_newproj" not in st.session_state:
+    st.session_state._clear_city_field_newproj = False
+if "map_center" not in st.session_state:
+    st.session_state.map_center = None
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 2
 
 # Funções para gerenciar cidades
-def add_city(country, city_name):
+def add_city(country, city_name, target_list="output"):
     """Adiciona uma cidade à lista"""
     if country and country != SELECT_PLACEHOLDER and city_name.strip():
-        pair = f"{country} — {city_name}"
-        if pair not in st.session_state.form_data["cities"]:
-            st.session_state.form_data["cities"].append(pair)
-            return True
+        for c in [x.strip() for x in city_name.split(",") if x.strip()]:
+            pair = f"{country} — {c}"
+            if pair not in st.session_state.city_list_output:
+                st.session_state.city_list_output.append(pair)
+        return True
     return False
 
 def remove_city(index):
     """Remove uma cidade da lista"""
-    if 0 <= index < len(st.session_state.form_data["cities"]):
-        st.session_state.form_data["cities"].pop(index)
+    if 0 <= index < len(st.session_state.city_list_output):
+        st.session_state.city_list_output.pop(index)
 
 def clear_form():
     """Limpa o formulário"""
-    st.session_state.form_data = {
-        "cities": [],
-        "countries_applied": False
-    }
+    st.session_state.city_list_output = []
+    st.session_state._clear_city_field_out = False
+    st.session_state._clear_city_field_newproj = False
+    st.session_state.map_center = None
+    st.session_state.map_zoom = 2
 
 # Formulário principal
 with st.form("output_form", clear_on_submit=False):
@@ -555,8 +562,11 @@ with st.form("output_form", clear_on_submit=False):
                     key="new_country_select"
                 )
             with col_city:
+                if st.session_state._clear_city_field_newproj and "new_city_input" in st.session_state:
+                    del st.session_state["new_city_input"]
+                    st.session_state._clear_city_field_newproj = False
                 new_city_input = st.text_input(
-                    "City name*",
+                    "City name (accepts multiple, separated by commas)*",
                     placeholder="Enter city name",
                     key="new_city_input"
                 )
@@ -565,13 +575,14 @@ with st.form("output_form", clear_on_submit=False):
                 st.write("")
                 add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
                 if add_new_city:
-                    if add_city(new_country_select, new_city_input):
+                    if add_city(new_country_select, new_city_input, "new_project"):
+                        st.session_state._clear_city_field_newproj = True
                         st.rerun()
         
         new_project_url = st.text_input("Project URL (optional)")
         new_project_contact = st.text_input("Project contact / institution (optional)")
     
-    # Cobertura geográfica do output - CORREÇÃO AQUI
+    # Cobertura geográfica do output
     st.subheader("Geographic Coverage")
     
     output_countries = st.multiselect(
@@ -586,7 +597,7 @@ with st.form("output_form", clear_on_submit=False):
         output_country_other = st.text_input("Please specify other geographic coverage")
     
     # SEÇÃO DE CIDADES PARA O OUTPUT - CORREÇÃO PRINCIPAL
-    # Esta seção deve aparecer IMEDIATAMENTE quando países são selecionados (exceto Global)
+    # Esta seção aparece IMEDIATAMENTE quando países são selecionados (exceto Global)
     if output_countries and not is_global:
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         
@@ -601,8 +612,11 @@ with st.form("output_form", clear_on_submit=False):
                     key="output_country_select"
                 )
             with col_city_out:
+                if st.session_state._clear_city_field_out and "output_city_input" in st.session_state:
+                    del st.session_state["output_city_input"]
+                    st.session_state._clear_city_field_out = False
                 output_city_input = st.text_input(
-                    "City name*",
+                    "City name (accepts multiple, separated by commas)*",
                     placeholder="Enter city name",
                     key="output_city_input"
                 )
@@ -611,7 +625,8 @@ with st.form("output_form", clear_on_submit=False):
                 st.write("")
                 add_output_city = st.form_submit_button("➕ Add City", use_container_width=True)
                 if add_output_city:
-                    if add_city(output_country_select, output_city_input):
+                    if add_city(output_country_select, output_city_input, "output"):
+                        st.session_state._clear_city_field_out = True
                         st.rerun()
     
     # Mensagem informativa quando Global é selecionado
@@ -619,9 +634,9 @@ with st.form("output_form", clear_on_submit=False):
         st.info("🌍 Global coverage selected - city selection is disabled")
     
     # Lista de cidades adicionadas
-    if st.session_state.form_data["cities"]:
+    if st.session_state.city_list_output:
         st.write("**Added cities:**")
-        for i, city_pair in enumerate(st.session_state.form_data["cities"]):
+        for i, city_pair in enumerate(st.session_state.city_list_output):
             col1, col2 = st.columns([4, 1])
             with col1:
                 st.write(f"📍 {city_pair}")
@@ -632,7 +647,7 @@ with st.form("output_form", clear_on_submit=False):
                     st.rerun()
     
     # Mapa de preview
-    if st.session_state.form_data["cities"] and not is_global:
+    if st.session_state.city_list_output and not is_global:
         st.write("**Map Preview:**")
         
         # Encontrar centro do mapa baseado nos países selecionados
@@ -656,6 +671,18 @@ with st.form("output_form", clear_on_submit=False):
                     fill=True,
                     fill_opacity=0.6
                 ).add_to(m)
+        
+        # Adicionar marcadores para cidades
+        for pair in st.session_state.city_list_output:
+            if "—" in pair:
+                country, city = [p.strip() for p in pair.split("—", 1)]
+                if country in COUNTRY_CENTER_FULL:
+                    folium.Marker(
+                        location=COUNTRY_CENTER_FULL[country],
+                        popup=f"{city}, {country}",
+                        tooltip=f"{city}, {country}",
+                        icon=folium.Icon(color="red", icon="info-sign")
+                    ).add_to(m)
         
         st_folium(m, height=300, width=None)
     
@@ -704,7 +731,7 @@ if submitted:
         errors.append("❌ Data type is required for datasets")
     if is_other_project and not project_tax_other.strip():
         errors.append("❌ Project name is required when selecting 'Other'")
-    if is_other_project and not st.session_state.form_data["cities"] and not new_project_countries:
+    if is_other_project and not st.session_state.city_list_output and not new_project_countries:
         errors.append("❌ For new projects, please add at least one country or city")
     
     if errors:
@@ -747,7 +774,7 @@ if submitted:
                 _append_row(wsP, PROJECTS_HEADERS, rowP)
             
             # Cidades
-            for city_pair in st.session_state.form_data["cities"]:
+            for city_pair in st.session_state.city_list_output:
                 if "—" in city_pair:
                     country, city = [p.strip() for p in city_pair.split("—",1)]
                     latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
@@ -790,7 +817,7 @@ if submitted:
                 lat_o, lon_o = COUNTRY_CENTER_FULL[available_countries[0]]
         
         # Preparar dados
-        output_cities_str = ", ".join(st.session_state.form_data["cities"])
+        output_cities_str = ", ".join(st.session_state.city_list_output)
         output_countries_str = ", ".join(output_countries)
         
         final_years_sorted_desc = sorted(set(years_selected), reverse=True)
