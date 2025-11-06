@@ -179,12 +179,32 @@ def _clean_url(u):
 def _ulid_like():
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
 
+def _countries_with_global_first(names: List[str]):
+    """Coloca 'Global' no início da lista de países"""
+    if "Global" in names:
+        return ["Global"] + [n for n in names if n != "Global"]
+    else:
+        return ["Global"] + names
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 4) Países e Cidades (CSV local/remoto)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
 WORLD_CITIES_URL = "https://raw.githubusercontent.com/joelacus/world-cities/master/world-cities.csv"
+
+@st.cache_data(show_spinner=False)
+def load_country_centers():
+    df = pd.read_csv(COUNTRY_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+    df.columns = [c.strip().lower() for c in df.columns]
+    c_country = "country"; c_lat = "latitude (average)"; c_lon = "longitude (average)"
+    if c_country not in df.columns or c_lat not in df.columns or c_lon not in df.columns:
+        raise RuntimeError("CSV must contain: 'Country', 'Latitude (average)', 'Longitude (average)'.")
+    df["lat"] = df[c_lat].apply(_parse_number_loose)
+    df["lon"] = df[c_lon].apply(_parse_number_loose)
+    df = df.dropna(subset=["lat", "lon"])
+    mapping = {row[c_country]: (float(row["lat"]), float(row["lon"])) for _, row in df.iterrows()}
+    return mapping, df
 
 @st.cache_data(show_spinner=False)
 def load_world_cities():
@@ -241,6 +261,42 @@ def load_world_cities():
         st.error(f"Erro ao carregar cidades: {e}")
         # Fallback: retorna DataFrame vazio mas com as colunas esperadas
         return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
+
+@st.cache_data(show_spinner=False)
+def get_cities_by_country(country_name):
+    """Retorna lista de cidades para um país específico"""
+    cities_df = load_world_cities()
+    if cities_df.empty:
+        return []
+    
+    # Filtra cidades pelo país
+    country_cities = cities_df[cities_df['country'].str.strip().str.lower() == country_name.strip().str.lower()]
+    
+    # Remove duplicatas e ordena
+    unique_cities = country_cities[['city', 'lat', 'lon']].drop_duplicates(subset=['city'])
+    unique_cities = unique_cities.sort_values('city')
+    
+    return unique_cities.to_dict('records')
+
+def find_city_coordinates(country_name, city_name):
+    """Encontra coordenadas para uma cidade específica"""
+    cities_df = load_world_cities()
+    if cities_df.empty:
+        return None, None
+    
+    match = cities_df[
+        (cities_df['country'].str.strip().str.lower() == country_name.strip().str.lower()) &
+        (cities_df['city'].str.strip().str.lower() == city_name.strip().str.lower())
+    ]
+    
+    if not match.empty:
+        return match.iloc[0]['lat'], match.iloc[0]['lon']
+    
+    return None, None
+
+COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
+WORLD_CITIES = load_world_cities()
+COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5) Header
@@ -482,12 +538,6 @@ else:
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
-# app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
-# ... (código anterior permanece igual)
-
-# app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
-# ... (código anterior permanece igual)
-
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO DE OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -503,7 +553,7 @@ _FORM_KEYS = {
     "years_selected",
     "output_desc","output_contact","output_linkedin","project_url_for_output",
     "country_for_city", "output_countries", "city_list_output",
-    "_countries_applied"  # Nova chave para controlar se países foram aplicados
+    "_countries_applied"
 }
 
 def _really_clear_output_form_state():
@@ -539,7 +589,7 @@ if "_clear_city_field_out" not in st.session_state:
 if "_clear_city_field_newproj" not in st.session_state:
     st.session_state._clear_city_field_newproj = False
 if "_countries_applied" not in st.session_state:
-    st.session_state._countries_applied = False  # Nova flag
+    st.session_state._countries_applied = False
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -579,7 +629,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 key="selected_country_city"
             )
         with colc2:
-            # CORREÇÃO: Campo de texto livre para cidade (sem autocompletar)
             if st.session_state._clear_city_field_newproj and "city_add_proj" in st.session_state:
                 del st.session_state["city_add_proj"]
                 st.session_state._clear_city_field_newproj = False
@@ -596,7 +645,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                         pair = f"{selected_country_city} — {c}"
                         if pair not in st.session_state.city_list_output:
                             st.session_state.city_list_output.append(pair)
-                            # Tenta encontrar coordenadas, mas não é obrigatório
                             lat, lon = find_city_coordinates(selected_country_city, c)
                             if lat and lon:
                                 st.session_state.city_coordinates[pair] = (lat, lon)
@@ -652,7 +700,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         key="output_countries"
     )
     
-    # NOVO: Botão para aplicar a seleção de países
     col_apply1, col_apply2 = st.columns([3, 1])
     with col_apply1:
         if st.form_submit_button("✅ Apply countries selection", use_container_width=True):
@@ -672,7 +719,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 st.session_state.city_coordinates = {}
             st.rerun()
     
-    # Mostra status da seleção
     if st.session_state._countries_applied and output_countries:
         st.success(f"✅ Countries applied: {', '.join(output_countries)}")
     
@@ -687,10 +733,8 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage", key="output_country_other")
 
-    # CORREÇÃO: Cidades para OUTPUT - campo de texto livre
     st.markdown("**Cities covered**")
     
-    # Só mostra campos de cidade se países foram aplicados e não é Global
     available_countries_for_cities = []
     if st.session_state._countries_applied and output_countries:
         available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
@@ -708,7 +752,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             disabled=is_global or not available_countries_for_cities or not st.session_state._countries_applied
         )
     with colx2:
-        # CORREÇÃO: Campo de texto livre para cidade (sem autocompletar)
         if st.session_state._clear_city_field_out and "output_city_dummy" in st.session_state:
             del st.session_state["output_city_dummy"]
             st.session_state._clear_city_field_out = False
@@ -720,7 +763,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         )
     with colx3:
         st.write("")
-        # CORREÇÃO: Botão só habilitado quando países foram aplicados e há seleção válida
         add_city_disabled = (is_global or 
                            not st.session_state._countries_applied or 
                            not country_for_city or 
@@ -738,7 +780,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     pair = f"{country_for_city} — {c}"
                     if pair not in st.session_state.city_list_output:
                         st.session_state.city_list_output.append(pair)
-                        # Tenta encontrar coordenadas, mas não é obrigatório
                         lat, lon = find_city_coordinates(country_for_city, c)
                         if lat and lon:
                             st.session_state.city_coordinates[pair] = (lat, lon)
@@ -768,7 +809,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                         del st.session_state.city_coordinates[it]
                     st.rerun()
 
-    # Mapa com cidades
     if (st.session_state._countries_applied and 
         not is_global and 
         available_countries_for_cities):
@@ -786,7 +826,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     tiles="CartoDB positron"
                 )
                 
-                # Marca países
                 for country in available_countries_for_cities:
                     if country in COUNTRY_CENTER_FULL:
                         latlon = COUNTRY_CENTER_FULL[country]
@@ -795,20 +834,17 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                             fill=True, fill_opacity=0.9, tooltip=f"{country}"
                         ).add_to(m)
                 
-                # Marca cidades com coordenadas específicas
                 for pair in st.session_state.get("city_list_output", []):
                     if "—" in pair:
                         ctry, cty = [p.strip() for p in pair.split("—",1)]
                         coords = st.session_state.city_coordinates.get(pair, None)
                         if coords and coords[0] is not None and coords[1] is not None:
-                            # Usa coordenadas específicas da cidade
                             folium.Marker(
                                 location=coords, 
                                 tooltip=f"{cty} ({ctry})",
                                 icon=folium.Icon(color="green", icon="info-sign")
                             ).add_to(m)
                         else:
-                            # Fallback para centro do país
                             latlon = COUNTRY_CENTER_FULL.get(ctry)
                             if latlon:
                                 folium.Marker(
@@ -831,7 +867,24 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     output_linkedin = st.text_input("LinkedIn address of contact", key="output_linkedin")
     project_url_for_output = st.text_input("Project URL (optional, if different)", key="project_url_for_output")
 
-    submitted = st.form_submit_button("Submit for review (Output)")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        submitted = st.form_submit_button(
+            "✅ Submit for review (Output)",
+            use_container_width=True,
+            type="primary"
+        )
+    with col2:
+        clear_form = st.form_submit_button(
+            "🗑️ Clear Form",
+            use_container_width=True,
+            type="secondary"
+        )
+
+    if clear_form:
+        _really_clear_output_form_state()
+        st.session_state._pending_form_reset = True
+        st.rerun()
 
     if submitted:
         if not submitter_email.strip():
@@ -848,7 +901,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         if output_type_sel != "Dataset":
             output_data_type = ""
 
-        # 1) Registrar projeto se for "Other"
         if is_other_project:
             wsP, errP = ws_projects()
             if errP or wsP is None:
@@ -859,7 +911,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             
             ok_allP, msg_anyP = True, None
             
-            # Países sem cidades específicas
             for country in countries_to_process:
                 latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
                 rowP = {
@@ -875,11 +926,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 okP2, msgP2 = _append_row(wsP, PROJECTS_HEADERS, rowP)
                 ok_allP &= okP2; msg_anyP = msgP2
             
-            # Cidades com coordenadas específicas
             for pair in cities_to_process:
                 if "—" not in pair: continue
                 country, city = [p.strip() for p in pair.split("—",1)]
-                # Usa coordenadas da cidade se disponível
                 coords = st.session_state.city_coordinates.get(pair, (None, None))
                 if coords[0] and coords[1]:
                     latp, lonp = coords
@@ -902,22 +951,18 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             if not ok_allP:
                 st.error(f"⚠️ Project staging write error: {msg_anyP}"); st.stop()
 
-        # 2) Gravar output
         wsO, errO = ws_outputs()
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs."); st.stop()
 
-        # Define coordenadas - prioriza cidades
         lat_o, lon_o = (None, None)
         if not is_global and available_countries_for_cities:
-            # Tenta usar coordenadas da primeira cidade
             if st.session_state.get("city_list_output"):
                 first_city = st.session_state.city_list_output[0]
                 coords = st.session_state.city_coordinates.get(first_city, (None, None))
                 if coords[0] and coords[1]:
                     lat_o, lon_o = coords
             
-            # Fallback para primeiro país
             if lat_o is None and available_countries_for_cities:
                 first_country = available_countries_for_cities[0]
                 if first_country in COUNTRY_CENTER_FULL:
