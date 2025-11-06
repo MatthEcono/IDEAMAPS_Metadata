@@ -458,6 +458,9 @@ if "map_center" not in st.session_state:
     st.session_state.map_center = None
 if "map_zoom" not in st.session_state:
     st.session_state.map_zoom = 2
+# NOVO: controla se a área de cidades deve abrir quando clicar em "Add city"
+if "_show_city_adder" not in st.session_state:
+    st.session_state._show_city_adder = False
 
 def add_city(country, city_csv):
     if country and country != SELECT_PLACEHOLDER and city_csv.strip():
@@ -478,6 +481,7 @@ def clear_form():
     st.session_state._clear_city_field_newproj = False
     st.session_state.map_center = None
     st.session_state.map_zoom = 2
+    st.session_state._show_city_adder = False  # reset do novo estado
 
 with st.form("output_form", clear_on_submit=False):
     # 1) Submitter email
@@ -527,6 +531,9 @@ with st.form("output_form", clear_on_submit=False):
 
     # 3) Output type
     output_type_sel = st.selectbox("Output Type*", options=OUTPUT_TYPES)
+    output_type_other = ""
+    if output_type_sel.startswith("Other"):
+        output_type_other = st.text_input("Please specify the output type*")
 
     # 4) Data type (somente se Dataset)
     output_data_type = SELECT_PLACEHOLDER
@@ -552,8 +559,17 @@ with st.form("output_form", clear_on_submit=False):
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage")
 
+    # NOVO BOTÃO: "Add city" abre a área de cidades com base nos países selecionados
+    open_city_adder = st.form_submit_button(
+        "Add city",
+        help="Clique para abrir o campo de cidade com base nos países selecionados acima"
+    )
+    if open_city_adder:
+        st.session_state._show_city_adder = True
+        st.rerun()
+
     # Cidades — somente se não for Global
-    if output_countries and not is_global:
+    if (st.session_state._show_city_adder or output_countries) and not is_global:
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         if available_countries:
             st.write("**Add cities for this output:**")
@@ -570,12 +586,12 @@ with st.form("output_form", clear_on_submit=False):
                     st.session_state._clear_city_field_out = False
                 output_city_input = st.text_input(
                     "City name (accepts multiple, separated by commas)*",
-                    placeholder="Enter city name",
+                    placeholder="Enter city name and press Enter",
                     key="output_city_input"
                 )
             with c3:
                 st.write(""); st.write("")
-                if st.form_submit_button("➕ Add City", use_container_width=True, key="add_city_output"):
+                if st.form_submit_button("Add", use_container_width=True, key="add_city_output"):
                     if add_city(output_country_select, output_city_input):
                         st.session_state._clear_city_field_out = True
                         st.rerun()
@@ -653,6 +669,8 @@ if 'submitted' in locals() and submitted:
         errors.append("❌ Project name is required when selecting 'Other'")
     if is_other_project and not (st.session_state.city_list_output or new_project_countries):
         errors.append("❌ For new projects, please add at least one country or city")
+    if output_type_sel.startswith("Other") and not output_type_other.strip():
+        errors.append("❌ Please specify the output type (Other)")
 
     if errors:
         for e in errors: st.error(e)
@@ -714,7 +732,7 @@ if 'submitted' in locals() and submitted:
             "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
             "output_title": output_title,
             "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
-            "output_type_other": ("" if not output_type_sel.startswith("Other") else output_type_other),
+            "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
             "output_data_type": ("" if output_type_sel != "Dataset" else output_data_type),
             "output_url": output_url,
             "output_country": ", ".join(output_countries),
@@ -738,7 +756,7 @@ if 'submitted' in locals() and submitted:
         if ok:
             st.success("✅ Output submission queued for review!")
             clear_form()
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error(f"⚠️ Error saving output: {msg}")
 
