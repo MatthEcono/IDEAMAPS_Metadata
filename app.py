@@ -517,6 +517,9 @@ else:
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
+# app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
+# ... (código anterior permanece igual)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO DE OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -531,8 +534,7 @@ _FORM_KEYS = {
     "output_city_dummy",
     "years_selected",
     "output_desc","output_contact","output_linkedin","project_url_for_output",
-    "country_for_city", "output_countries", "city_list_output",
-    "selected_city", "city_search"
+    "country_for_city", "output_countries", "city_list_output"
 }
 
 def _really_clear_output_form_state():
@@ -606,32 +608,31 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 key="selected_country_city"
             )
         with colc2:
-            # AUTOBUSCA DE CIDADES PARA NOVO PROJETO
-            city_options = [SELECT_PLACEHOLDER]
-            if selected_country_city and selected_country_city != SELECT_PLACEHOLDER:
-                cities_data = get_cities_by_country(selected_country_city)
-                city_options.extend([city['city'] for city in cities_data])
-            
-            selected_city_newproj = st.selectbox(
-                "Select city",
-                options=city_options,
-                key="selected_city_newproj"
+            # CORREÇÃO: Campo de texto livre para cidade (sem autocompletar)
+            if st.session_state._clear_city_field_newproj and "city_add_proj" in st.session_state:
+                del st.session_state["city_add_proj"]
+                st.session_state._clear_city_field_newproj = False
+            city_input_proj = st.text_input(
+                "City name (type manually)",
+                key="city_add_proj",
+                placeholder="Enter city name"
             )
         with colc3:
             st.write("")
             if st.form_submit_button("➕ Add city to NEW project"):
-                if (selected_country_city and selected_country_city != SELECT_PLACEHOLDER and 
-                    selected_city_newproj and selected_city_newproj != SELECT_PLACEHOLDER):
-                    pair = f"{selected_country_city} — {selected_city_newproj}"
-                    if pair not in st.session_state.city_list_output:
-                        st.session_state.city_list_output.append(pair)
-                        # Salva coordenadas da cidade
-                        lat, lon = find_city_coordinates(selected_country_city, selected_city_newproj)
-                        if lat and lon:
-                            st.session_state.city_coordinates[pair] = (lat, lon)
+                if selected_country_city and selected_country_city != SELECT_PLACEHOLDER and city_input_proj.strip():
+                    for c in [x.strip() for x in city_input_proj.split(",") if x.strip()]:
+                        pair = f"{selected_country_city} — {c}"
+                        if pair not in st.session_state.city_list_output:
+                            st.session_state.city_list_output.append(pair)
+                            # Tenta encontrar coordenadas, mas não é obrigatório
+                            lat, lon = find_city_coordinates(selected_country_city, c)
+                            if lat and lon:
+                                st.session_state.city_coordinates[pair] = (lat, lon)
+                    st.session_state._clear_city_field_newproj = True
                     st.rerun()
                 else:
-                    st.warning("Select a valid country and city.")
+                    st.warning("Select a valid country and type a city name.")
 
         if st.session_state.get("city_list_output"):
             st.caption("Cities added to NEW project:")
@@ -642,7 +643,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     if coords[0] and coords[1]:
                         st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
                     else:
-                        st.write(f"- {it}")
+                        st.write(f"- {it} (⚠️ coordinates not found)")
                 with c2:
                     if st.form_submit_button("Remove", key=f"rm_city_newproj_{i}"):
                         st.session_state.city_list_output.pop(i)
@@ -658,7 +659,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     output_data_type = ""
     if output_type_sel == "Dataset":
         output_data_type = st.selectbox(
-            "NOT APPLICABLE FOR DATASETS *", 
+            "Data type (for datasets) *", 
             options=[SELECT_PLACEHOLDER] + DATASET_DTYPES,
             key="output_data_type"
         )
@@ -691,7 +692,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage", key="output_country_other")
 
-    # AUTOBUSCA DE CIDADES PARA OUTPUT
+    # CORREÇÃO: Cidades para OUTPUT - campo de texto livre
     st.markdown("**Cities covered**")
     available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
     
@@ -705,35 +706,35 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             disabled=is_global or not available_countries_for_cities
         )
     with colx2:
-        # Carrega cidades do país selecionado
-        city_options_output = [SELECT_PLACEHOLDER]
-        if country_for_city and country_for_city != SELECT_PLACEHOLDER:
-            cities_data = get_cities_by_country(country_for_city)
-            city_options_output.extend([city['city'] for city in cities_data])
-        
-        selected_city_output = st.selectbox(
-            "Select city",
-            options=city_options_output,
-            key="selected_city_output",
+        # CORREÇÃO: Campo de texto livre para cidade (sem autocompletar)
+        if st.session_state._clear_city_field_out and "output_city_dummy" in st.session_state:
+            del st.session_state["output_city_dummy"]
+            st.session_state._clear_city_field_out = False
+        city_input_out = st.text_input(
+            "City name (type manually)",
+            key="output_city_dummy",
+            placeholder="Enter city name",
             disabled=is_global
         )
     with colx3:
         st.write("")
-        add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not selected_city_output or selected_city_output == SELECT_PLACEHOLDER
+        add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not city_input_out.strip()
         if st.form_submit_button("➕ Add city to OUTPUT", disabled=add_city_disabled):
-            if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and selected_city_output and selected_city_output != SELECT_PLACEHOLDER:
-                pair = f"{country_for_city} — {selected_city_output}"
-                if pair not in st.session_state.city_list_output:
-                    st.session_state.city_list_output.append(pair)
-                    # Salva coordenadas da cidade
-                    lat, lon = find_city_coordinates(country_for_city, selected_city_output)
-                    if lat and lon:
-                        st.session_state.city_coordinates[pair] = (lat, lon)
+            if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and city_input_out.strip():
+                for c in [x.strip() for x in city_input_out.split(",") if x.strip()]:
+                    pair = f"{country_for_city} — {c}"
+                    if pair not in st.session_state.city_list_output:
+                        st.session_state.city_list_output.append(pair)
+                        # Tenta encontrar coordenadas, mas não é obrigatório
+                        lat, lon = find_city_coordinates(country_for_city, c)
+                        if lat and lon:
+                            st.session_state.city_coordinates[pair] = (lat, lon)
+                st.session_state._clear_city_field_out = True
                 st.rerun()
             elif is_global:
                 st.warning("Cannot add cities for global coverage")
             else:
-                st.warning("Choose a valid country and city.")
+                st.warning("Choose a valid country and type a city name.")
 
     if st.session_state.get("city_list_output") and not is_global:
         st.caption("Cities added to OUTPUT:")
@@ -744,7 +745,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 if coords[0] and coords[1]:
                     st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
                 else:
-                    st.write(f"- {it}")
+                    st.write(f"- {it} (⚠️ coordinates not found)")
             with c2:
                 if st.form_submit_button("Remove", key=f"rm_city_out_{i}"):
                     st.session_state.city_list_output.pop(i)
