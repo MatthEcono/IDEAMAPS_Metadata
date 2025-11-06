@@ -192,7 +192,8 @@ def _countries_with_global_first(names: List[str]):
 
 def get_geocoding_api_key():
     """Obtém a chave da API de Geocoding dos secrets do Streamlit"""
-    return st.secrets.get("GEOCODING_API_KEY")
+    # Primeiro tenta do secrets, depois usa a chave fornecida
+    return st.secrets.get("GEOCODING_API_KEY", "690ca0d58f364195390354fkt9ebb89")
 
 def geocode_city(city_name: str, country_name: str = None) -> Tuple[Optional[float], Optional[float]]:
     """
@@ -223,7 +224,9 @@ def geocode_city(city_name: str, country_name: str = None) -> Tuple[Optional[flo
             location = data["results"][0]["geometry"]["location"]
             return location["lat"], location["lng"]
         else:
-            st.warning(f"⚠️ Could not find coordinates for {query}: {data.get('status', 'Unknown error')}")
+            # Tenta sem o país se não encontrou
+            if country_name and data["status"] != "OK":
+                return geocode_city(city_name)  # Recursão sem país
             return None, None
             
     except Exception as e:
@@ -233,7 +236,6 @@ def geocode_city(city_name: str, country_name: str = None) -> Tuple[Optional[flo
 def find_city_coordinates(country_name: str, city_name: str) -> Tuple[Optional[float], Optional[float]]:
     """
     Encontra coordenadas para uma cidade específica usando Geocoding API
-    Primeiro tenta com país, depois sem país se não encontrar
     """
     if not city_name or not city_name.strip():
         return None, None
@@ -241,15 +243,8 @@ def find_city_coordinates(country_name: str, city_name: str) -> Tuple[Optional[f
     city_name = city_name.strip()
     country_name = country_name.strip() if country_name else None
     
-    # Tenta primeiro com país
-    if country_name:
-        lat, lon = geocode_city(city_name, country_name)
-        if lat is not None and lon is not None:
-            return lat, lon
-    
-    # Se não encontrou com país, tenta sem país
-    lat, lon = geocode_city(city_name)
-    return lat, lon
+    # Usa Geocoding API
+    return geocode_city(city_name, country_name)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 5) Países (CSV local)
@@ -301,9 +296,13 @@ projects…</p>
 if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
-# Verificar se a API key está configurada
-if not get_geocoding_api_key():
-    st.sidebar.warning("⚠️ Geocoding API key not configured. City coordinates will not be available.")
+# Status da API no sidebar
+api_key = get_geocoding_api_key()
+if api_key:
+    st.sidebar.success("✅ Geocoding API: Active")
+    st.sidebar.info("📍 City coordinates: Enabled")
+else:
+    st.sidebar.error("❌ Geocoding API: Not configured")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7) Carregamento de dados
@@ -533,7 +532,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10) SUBMISSÃO DE OUTPUT - COM GEOCODING API
+# 10) SUBMISSÃO DE OUTPUT - COM GEOCODING API ATIVA
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
