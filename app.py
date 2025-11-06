@@ -91,94 +91,156 @@ DATASET_DTYPES = [
 ]
 SELECT_PLACEHOLDER = "— Select —"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 2) Google Sheets helpers
-# ──────────────────────────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def _gs_client():
-    try:
-        creds_info = st.secrets.get("gcp_service_account")
-        if not creds_info:
-            return None, "Configure gcp_service_account em st.secrets."
-        scopes = ["https://www.googleapis.com/auth/spreadsheets",
-                  "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        client = gspread.authorize(creds)
-        return client, None
-    except Exception as e:
-        return None, f"Google Sheets auth error: {e}"
+# ===== NEW project details (required if not in taxonomy) =====
+st.markdown("**New project details (required if not in taxonomy)**")
 
-def _open_or_create(ws_name: str, headers: Optional[List[str]] = None):
-    client, err = _gs_client()
-    if err or client is None:
-        return None, err or "Client unavailable."
-    ss_id = st.secrets.get("SHEETS_SPREADSHEET_ID")
-    if not ss_id:
-        return None, "Defina SHEETS_SPREADSHEET_ID em st.secrets."
-    try:
-        ss = client.open_by_key(ss_id)
-    except Exception as e:
-        return None, f"Open spreadsheet error: {e}"
-    try:
-        ws = ss.worksheet(ws_name)
-    except gspread.exceptions.WorksheetNotFound:
-        ncols = max(10, len(headers) if headers else 10)
-        ws = ss.add_worksheet(title=ws_name, rows=2000, cols=ncols)
-        if headers:
-            ws.update("A1", [headers])
-    except Exception as e:
-        return None, f"Worksheet error: {e}"
-    try:
-        current = ws.row_values(1) or []
-        missing = [h for h in (headers or []) if h not in current]
-        if missing:
-            ws.update("A1", [current + missing])
-    except Exception:
-        pass
-    return ws, None
+# Países
+countries_sel = st.multiselect(
+    "Implementation countries (one or more)",
+    COUNTRY_NAMES,
+    key="new_project_countries"
+)
 
-def ws_projects(): return _open_or_create(PROJECTS_SHEET, PROJECTS_HEADERS)
-def ws_outputs():  return _open_or_create(OUTPUTS_SHEET,  OUTPUTS_HEADERS)
+# País + Cidade(s) para o NOVO projeto
+colc1, colc2, colc3 = st.columns([2,2,1])
+with colc1:
+    selected_country_city = st.selectbox(
+        "Select implementation country for the city",
+        options=[SELECT_PLACEHOLDER] + countries_sel if countries_sel else [SELECT_PLACEHOLDER],
+        index=0,
+        disabled=not bool(countries_sel),
+        key="selected_country_city"
+    )
+with colc2:
+    # Limpa o campo antes de criar o widget se flag estiver setado
+    if st.session_state._clear_city_field_newproj and "city_add_proj" in st.session_state:
+        del st.session_state["city_add_proj"]
+        st.session_state._clear_city_field_newproj = False
+    city_input_proj = st.text_input(
+        "City (accepts multiple, separated by commas)",
+        key="city_add_proj"
+    )
+with colc3:
+    st.write("")
+    if st.form_submit_button("➕ Add city to NEW project"):
+        if selected_country_city and selected_country_city != SELECT_PLACEHOLDER and city_input_proj.strip():
+            for c in [x.strip() for x in city_input_proj.split(",") if x.strip()]:
+                pair = f"{selected_country_city} — {c}"
+                if pair not in st.session_state.city_list_output:
+                    st.session_state.city_list_output.append(pair)
+            # Marca para limpar campo após o rerun
+            st.session_state._clear_city_field_newproj = True
+            st.rerun()
+        else:
+            st.warning("Select a valid country and type a city.")
 
-def _append_row(ws, headers, row_dict: dict) -> Tuple[bool, str]:
-    try:
-        header = ws.row_values(1) or headers
-        values = [row_dict.get(col, "") for col in header]
-        ws.append_row(values, value_input_option="RAW")
-        return True, "Saved."
-    except Exception as e:
-        return False, f"Write error: {e}"
+# Lista de cidades adicionadas ao NOVO projeto
+if st.session_state.city_list_output:
+    st.caption("Cities added to NEW project:")
+    for i, it in enumerate(st.session_state.city_list_output):
+        c1, c2 = st.columns([6,1])
+        with c1:
+            st.write(f"- {it}")
+        with c2:
+            if st.form_submit_button("Remove", key=f"rm_city_newproj_{i}"):
+                st.session_state.city_list_output.pop(i)
+                st.rerun()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# 3) Utils
-# ──────────────────────────────────────────────────────────────────────────────
-def _parse_number_loose(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)): return None
-    s = str(x).strip().strip("'").strip('"')
-    if not s: return None
-    if ("," in s) or ("." in s):
-        last = max(s.rfind(","), s.rfind("."))
-        if last >= 0:
-            intp = re.sub(r"[^\d\-\+]", "", s[:last]) or "0"
-            frac = re.sub(r"\D", "", s[last+1:]) or "0"
-            try: return float(f"{intp}.{frac}")
-            except Exception: pass
-    raw = re.sub(r"[^\d\-\+]", "", s)
-    try: return float(raw)
-    except Exception:
-        try: return float(s.replace(",", "."))
-        except Exception: return None
+if st.checkbox("Clear all cities", key="_clear_cities_flag"):
+    st.session_state.city_list_output = []
 
-def _as_float(x):
-    v = _parse_number_loose(x)
-    return float(v) if v is not None else None
+# Metadados opcionais do novo projeto
+new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
+new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
 
-def _clean_url(u):
-    s = (u or "").strip()
-    return s if (s.startswith("http://") or s.startswith("https://")) else s
 
-def _ulid_like():
-    return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+# ===== Cities covered (OUTPUT) =====
+st.markdown("**Cities covered**")
+
+colx1, colx2, colx3 = st.columns([2,2,1])
+with colx1:
+    # País para a cidade do OUTPUT (sempre exigir país explícito)
+    country_for_city = st.selectbox(
+        "Country for the city",
+        options=[SELECT_PLACEHOLDER] + COUNTRY_NAMES,
+        index=0,
+        key="country_for_city"
+    )
+
+with colx2:
+    # Limpa o campo antes de criar o widget se flag estiver setado
+    if st.session_state._clear_city_field_out and "output_city_dummy" in st.session_state:
+        del st.session_state["output_city_dummy"]
+        st.session_state._clear_city_field_out = False
+    city_input_out = st.text_input(
+        "City (accepts multiple, separated by commas)",
+        key="output_city_dummy"
+    )
+
+with colx3:
+    st.write("")
+    if st.form_submit_button("➕ Add city to OUTPUT"):
+        if country_for_city and country_for_city != SELECT_PLACEHOLDER and city_input_out.strip():
+            for c in [x.strip() for x in city_input_out.split(",") if x.strip()]:
+                pair = f"{country_for_city} — {c}"
+                if pair not in st.session_state.city_list_output:
+                    st.session_state.city_list_output.append(pair)
+            # Marca para limpar campo após o rerun (NÃO escreva direto no widget aqui)
+            st.session_state._clear_city_field_out = True
+            st.rerun()
+        else:
+            st.warning("Choose a valid country and type a city.")
+
+# Lista de cidades adicionadas ao OUTPUT
+if st.session_state.city_list_output:
+    st.caption("Cities added to OUTPUT:")
+    for i, it in enumerate(st.session_state.city_list_output):
+        c1, c2 = st.columns([6,1])
+        with c1:
+            st.write(f"- {it}")
+        with c2:
+            if st.form_submit_button("Remove", key=f"rm_city_out_{i}"):
+                st.session_state.city_list_output.pop(i)
+                st.rerun()
+
+# ===== Mapa de previsualização =====
+# Atualiza centro do mapa quando o país de cobertura (output_country) muda
+if output_country and (output_country in COUNTRY_CENTER_FULL):
+    lat, lon = COUNTRY_CENTER_FULL.get(output_country, (None, None))
+    if (lat is not None) and (lon is not None):
+        st.session_state.map_center = [lat, lon]
+        st.session_state.map_zoom = 4
+elif isinstance(output_country, str) and output_country.startswith("Other"):
+    st.session_state.map_center = None
+    st.session_state.map_zoom = 2
+
+# Render do mapa (centro no país selecionado) + marcadores para as cidades (no centro do respectivo país)
+if st.session_state.map_center:
+    m = folium.Map(
+        location=st.session_state.map_center,
+        zoom_start=st.session_state.map_zoom,
+        tiles="CartoDB positron"
+    )
+    # marcador central do país de cobertura
+    folium.CircleMarker(
+        location=st.session_state.map_center,
+        radius=6,
+        color="#2563eb",
+        fill=True,
+        fill_opacity=0.9,
+        tooltip=f"{output_country}"
+    ).add_to(m)
+
+    # marcadores de cidades (usando centro do país da cidade)
+    for pair in st.session_state.city_list_output:
+        if "—" in pair:
+            ctry, cty = [p.strip() for p in pair.split("—", 1)]
+            latlon = COUNTRY_CENTER_FULL.get(ctry)
+            if latlon:
+                folium.Marker(location=latlon, tooltip=f"{cty} ({ctry})").add_to(m)
+
+    st_folium(m, height=320, width=None)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 4) Países (CSV local)
@@ -352,6 +414,21 @@ if "map_zoom" not in st.session_state:
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
+
+# ===== STATE INIT (antes do formulário) =====
+if "city_list_output" not in st.session_state:
+    st.session_state.city_list_output = []
+if "map_center" not in st.session_state:
+    st.session_state.map_center = None
+if "map_zoom" not in st.session_state:
+    st.session_state.map_zoom = 2
+
+# Flags para limpar campos de cidade após clique de ADD (evita mexer no widget durante o submit)
+if "_clear_city_field_out" not in st.session_state:
+    st.session_state._clear_city_field_out = False
+if "_clear_city_field_newproj" not in st.session_state:
+    st.session_state._clear_city_field_newproj = False
+
 
 with st.form("OUTPUT_FORM", clear_on_submit=False):
     submitter_email = st.text_input(
