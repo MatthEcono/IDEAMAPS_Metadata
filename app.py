@@ -58,13 +58,9 @@ for k, v in {
     "_selected_output_idx": None,
     "_want_open_dialog": False,
     "_outputs_editor_key_version": 0,
-    "_action_dialog": False,
-    "_pending_action": None,
-    "_pending_row_idx": None,
-    "_pending_sheet_row": None,
-    "_reason_tmp": "",
-    "_pending_confirm": False,
-    "_pending_reason": "",
+    # seleção e ação (sem popup)
+    "_table_selection": None,          # índice selecionado
+    "_action_reason": "",
 }.items():
     if k not in ss:
         ss[k] = v
@@ -417,7 +413,7 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Browse outputs + Ações (Edit / Remove) com POPUP e pré-preenchimento
+# 8) Browse outputs — seleção + botões Edit / Remove (sem popup)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -437,12 +433,10 @@ else:
 
         df_preview = df_base[preview_cols + ["sheet_row"]].copy()
         details_col = "See full information"
-        ACTION_COL = "Action"
-        REASON_COL = "Reason (auto)"
+        SELECT_COL  = "Select"
 
         df_preview[details_col] = False
-        df_preview[ACTION_COL] = "—"
-        df_preview[REASON_COL] = ""
+        df_preview[SELECT_COL]  = False
 
         editor_key = f"outputs_editor_{ss._outputs_editor_key_version}"
         edited = st.data_editor(
@@ -450,7 +444,7 @@ else:
             key=editor_key,
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols + ["sheet_row", REASON_COL],
+            disabled=preview_cols + ["sheet_row"],
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
@@ -459,22 +453,18 @@ else:
                 "output_data_type": st.column_config.TextColumn("output_data_type"),
                 "sheet_row": st.column_config.TextColumn("sheet_row"),
                 details_col: st.column_config.CheckboxColumn(details_col, help="Open details for this row"),
-                ACTION_COL: st.column_config.SelectboxColumn(
-                    ACTION_COL, options=["—","Edit","Remove"], help="Choose Edit or Remove for this row"
-                ),
-                REASON_COL: st.column_config.TextColumn(REASON_COL),
+                SELECT_COL:  st.column_config.CheckboxColumn(SELECT_COL, help="Select one row to edit/remove"),
             }
         )
 
         # detalhes
-        selected_idx_list = []
         if details_col in edited.columns:
-            selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
-        if selected_idx_list and not ss._want_open_dialog:
-            ss._selected_output_idx = int(selected_idx_list[0])
-            ss._want_open_dialog = True
-            ss._outputs_editor_key_version += 1
-            st.rerun()
+            det_idx = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
+            if det_idx and not ss._want_open_dialog:
+                ss._selected_output_idx = int(det_idx[0])
+                ss._want_open_dialog = True
+                ss._outputs_editor_key_version += 1
+                st.rerun()
 
         def _render_full_info_md(row):
             show_cols = [
@@ -523,44 +513,37 @@ else:
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
-        # ====== POPUP DE AÇÃO (flags) ======
-        def _open_action_dialog(action_label: str):
-            ss._action_dialog = True
-            ss._pending_confirm = False
-            ss._pending_reason = ""
+        # seleção única
+        sel_idxs = [i for i, v in enumerate(edited[SELECT_COL].tolist()) if bool(v)] if SELECT_COL in edited.columns else []
+        if sel_idxs:
+            ss._table_selection = int(sel_idxs[0])  # fica só com a primeira seleção
 
-        def _close_action_dialog():
-            ss._action_dialog = False
+        st.write("")  # espaçamento
+        ss._action_reason = st.text_input("Reason (required for Edit or Remove)", value=ss._action_reason)
+
+        colA, colB = st.columns([1,1])
 
         def _prepopulate_submission_from_row(row_dict: dict, reason: str, sheet_row: int):
-            """Preenche o form de submissão; a gravação ocorrerá no Submit."""
+            # limpa e ativa modo edição
             ss[wkey("submitter_email")] = ""  # quem edita deve informar o seu e-mail
-
             proj_name = (row_dict.get("project") or "").strip()
             ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
             if ss[wkey("project_tax_sel")].startswith("Other"):
                 ss[wkey("project_tax_other")] = proj_name
-
-            ss[wkey("output_type_sel")] = (row_dict.get("output_type") or "")
-            if not ss[wkey("output_type_sel")]:
-                ss[wkey("output_type_sel")] = (
-                    "Other: ________" if (row_dict.get("output_type_other") or "") else OUTPUT_TYPES[0]
-                )
+            ss[wkey("output_type_sel")] = (row_dict.get("output_type") or "") or OUTPUT_TYPES[0]
             ss[wkey("output_type_other")] = (row_dict.get("output_type_other") or "")
-
             if ss[wkey("output_type_sel")] == "Dataset":
                 ss[wkey("output_data_type")] = (row_dict.get("output_data_type") or SELECT_PLACEHOLDER)
-
             ss[wkey("output_title")] = (row_dict.get("output_title") or "")
             ss[wkey("output_url")]   = (row_dict.get("output_url") or "")
-
+            # países
             countries = []
             oc = (row_dict.get("output_country") or "").strip()
             if oc:
                 parts = [p.strip() for p in oc.split(",") if p.strip()]
                 countries = parts if len(parts) > 1 else [oc]
             ss[wkey("output_countries")] = countries
-
+            # cidades
             ss.form_data["cities"] = []
             ocity = (row_dict.get("output_city") or "").strip()
             if ocity:
@@ -571,7 +554,7 @@ else:
                     else:
                         base_country = countries[0] if countries else ""
                         ss.form_data["cities"].append(f"{base_country} — {p}" if base_country else p)
-
+            # anos
             years_txt = (row_dict.get("output_year") or "").strip()
             years = []
             if years_txt:
@@ -580,83 +563,47 @@ else:
                     if y.isdigit():
                         years.append(int(y))
             ss[wkey("years_selected")] = years
-
+            # outros
             ss[wkey("output_desc")]            = (row_dict.get("output_desc") or "")
             ss[wkey("output_contact")]         = (row_dict.get("output_contact") or "")
             ss[wkey("output_linkedin")]        = (row_dict.get("output_linkedin") or "")
             ss[wkey("project_url_for_output")] = (row_dict.get("project_url") or "")
-
+            # flags de edição
             ss["_edit_mode"]       = True
             ss["_edit_reason"]     = reason
             ss["_edit_target_row"] = int(sheet_row) if sheet_row else None
 
-        def _show_action_dialog(df_base_local):
-            if not ss.get("_action_dialog"):
-                return
-            action = ss.get("_pending_action")
-            row_idx = ss.get("_pending_row_idx")
-            if action not in ("Edit","Remove") or row_idx is None:
-                _close_action_dialog()
-                return
-            title = "Reason for Edit" if action == "Edit" else "Reason for Remove"
+        with colA:
+            if st.button("✏️ Edit selected", use_container_width=True):
+                if ss._table_selection is None:
+                    st.error("Select one row first.")
+                elif not ss._action_reason.strip():
+                    st.error("Reason is required.")
+                else:
+                    base_row = df_base.iloc[ss._table_selection].to_dict()
+                    try:
+                        sheet_row = int(df_base.iloc[ss._table_selection]["sheet_row"])
+                    except Exception:
+                        sheet_row = None
+                    _prepopulate_submission_from_row(base_row, ss._action_reason.strip(), sheet_row)
+                    flash("✏️ Edit mode enabled. The form below is pre-filled — complete your email and submit.", "info")
+                    ss._outputs_editor_key_version += 1
+                    ss._table_selection = None
+                    ss._action_reason = ""
+                    st.rerun()
 
-            try:
-                @st.dialog(title)
-                def _dlg():
-                    st.write("Please provide a short reason. This will appear in the review queue.")
-                    reason_val = st.text_area("Reason*", key="reason_textarea_dialog", value=ss.get("_pending_reason",""))
-                    colA, colB = st.columns([1,1])
-                    with colA:
-                        if st.button("Cancel", use_container_width=True):
-                            _close_action_dialog()
-                            ss._outputs_editor_key_version += 1
-                            st.rerun()
-                    with colB:
-                        def _ok():
-                            if not reason_val.strip():
-                                st.error("Reason is required.")
-                                return
-                            ss._pending_reason  = reason_val.strip()
-                            ss._pending_confirm = True
-                            _close_action_dialog()
-                            st.rerun()
-                        st.button("OK", type="primary", use_container_width=True, on_click=_ok)
-                _dlg()
-            except Exception:
-                st.error("Could not open dialog UI on this environment.")
-
-        # detectar seleção de ação e abrir popup
-        chosen = None
-        for i in range(len(edited)):
-            act = str(edited.at[i, ACTION_COL]).strip()
-            if act in ("Edit","Remove"):
-                chosen = (i, act)
-                break
-        if chosen:
-            i, act = chosen
-            try:
-                sheet_row = int(edited.at[i, "sheet_row"])
-            except Exception:
-                sheet_row = None
-            ss._pending_action = act
-            ss._pending_row_idx = int(i)
-            ss._pending_sheet_row = sheet_row
-            _open_action_dialog(act)
-            ss._outputs_editor_key_version += 1
-            st.rerun()
-
-        # render dialog (se ativo)
-        _show_action_dialog(df_base)
-
-        # PROCESSAMENTO FORA DO DIÁLOGO
-        if ss.get("_pending_confirm", False):
-            try:
-                i = ss._pending_row_idx
-                action = ss._pending_action
-                sheet_row = ss._pending_sheet_row
-                base_row = df_base.iloc[i].to_dict() if i is not None else {}
-
-                if action == "Remove":
+        with colB:
+            if st.button("🗑️ Remove selected", use_container_width=True):
+                if ss._table_selection is None:
+                    st.error("Select one row first.")
+                elif not ss._action_reason.strip():
+                    st.error("Reason is required.")
+                else:
+                    base_row = df_base.iloc[ss._table_selection].to_dict()
+                    try:
+                        sheet_row = int(df_base.iloc[ss._table_selection]["sheet_row"])
+                    except Exception:
+                        sheet_row = None
                     wsO, errO = ws_outputs()
                     if errO or wsO is None:
                         st.error(errO or "Worksheet unavailable for outputs.")
@@ -680,7 +627,7 @@ else:
                             "submitter_email": "",
                             "is_edit": "TRUE",
                             "edit_target": str(sheet_row or ""),
-                            "edit_request": f"REMOVE REQUEST: {ss._pending_reason}",
+                            "edit_request": f"REMOVE REQUEST: {ss._action_reason.strip()}",
                             "approved": "FALSE",
                             "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                             "lat": (base_row.get("lat") if pd.notna(base_row.get("lat")) else ""),
@@ -688,18 +635,10 @@ else:
                         }
                         _append_row(wsO, OUTPUTS_HEADERS, rowO)
                         flash("🗑️ Removal request sent for review.", "success")
-                else:
-                    _prepopulate_submission_from_row(base_row, ss._pending_reason, sheet_row)
-                    flash("✏️ Edit mode enabled. The form below is pre-filled — complete your email and submit.", "info")
-
-            finally:
-                ss._pending_confirm = False
-                ss._pending_reason  = ""
-                ss._pending_action  = None
-                ss._pending_row_idx = None
-                ss._pending_sheet_row = None
-                ss._outputs_editor_key_version += 1
-                st.rerun()
+                        ss._outputs_editor_key_version += 1
+                        ss._table_selection = None
+                        ss._action_reason = ""
+                        st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO — Reativo + Reuso países/cidades + 1 linha por país
@@ -859,7 +798,7 @@ output_contact = st.text_input("Name & institution of person responsible", key=w
 output_linkedin = st.text_input("LinkedIn address of contact", key=wkey("output_linkedin"))
 project_url_for_output = st.text_input("Project URL (optional, if different)", key=wkey("project_url_for_output"))
 
-# Se projeto é "Other", só pedimos URL/contato (países/cidades já vêm do coverage)
+# Se projeto é "Other": só URL/contato (países/cidades vêm do coverage)
 if is_other_project:
     st.subheader("New Project Details (countries/cities reused from coverage above)")
     new_project_url = st.text_input("Project URL (optional)", key=wkey("new_project_url"))
@@ -988,7 +927,6 @@ def _cb_submit():
                 "lat": lat_o if lat_o is not None else "",
                 "lon": lon_o if lon_o is not None else "",
             }
-            # marcação de edição
             if ss.get("_edit_mode"):
                 rb["is_edit"] = "TRUE"
                 rb["edit_target"] = str(ss.get("_edit_target_row") or "")
@@ -1002,14 +940,12 @@ def _cb_submit():
 
         wrote_any = False
 
-        # Global
         if "Global" in output_countries_list:
             rowO = _row_base("Global", None, None, "")
             rowO["output_city"] = ", ".join(ss.form_data["cities"])
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
-        # Other
         if "Other: ______" in output_countries_list:
             other_txt = (state["output_country_other"] or "").strip() or "Other"
             rowO = _row_base(other_txt, None, None, other_txt)
@@ -1017,7 +953,7 @@ def _cb_submit():
             _append_row(wsO, OUTPUTS_HEADERS, rowO)
             wrote_any = True
 
-        # Países normais
+        # países normais
         normal_countries = [c for c in output_countries_list if c not in ["Global", "Other: ______"]]
         for country in normal_countries:
             lat_o, lon_o = COUNTRY_CENTER_FULL.get(country, (None, None))
@@ -1029,7 +965,6 @@ def _cb_submit():
         if wrote_any:
             ss._post_submit = True
             ss._post_submit_msg = "✅ Output submission queued for review!"
-            # finaliza modo edição e limpa form
             ss["_edit_mode"] = False
             ss["_edit_reason"] = ""
             ss["_edit_target_row"] = None
