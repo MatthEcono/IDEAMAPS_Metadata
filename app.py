@@ -442,7 +442,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT (Global permite cidades + botão 🔄 no seletor de país)
+# 9) SUBMISSÃO DE OUTPUT (com pop-up de confirmação + botão 🔄 no país da cidade)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
@@ -455,12 +455,15 @@ if "_clear_city_field_out" not in ss:
     ss._clear_city_field_out = False
 if "output_countries" not in ss:
     ss.output_countries = []
-# versão do seletor de país das cidades (para forçar refresh das opções)
 if "_country_for_city_version" not in ss:
     ss._country_for_city_version = 0
+# flags/armazenamento do preview de linhas para o pop-up
+if "_show_confirm" not in ss:
+    ss._show_confirm = False
+if "_rows_preview" not in ss:
+    ss._rows_preview = None
 
 def add_city(country, city_csv):
-    """Adiciona 1+ cidades (separadas por vírgula) para um país."""
     if country and country != SELECT_PLACEHOLDER and city_csv.strip():
         for c in [x.strip() for x in city_csv.split(",") if x.strip()]:
             pair = f"{country} — {c}"
@@ -478,7 +481,10 @@ def clear_form():
     ss._clear_city_field_out = False
     ss.output_countries = []
     ss._country_for_city_version = 0
+    ss._rows_preview = None
+    ss._show_confirm = False
 
+# —————————————— FORM ——————————————
 with st.form("output_form", clear_on_submit=False):
     st.subheader("Basic Information")
 
@@ -496,7 +502,7 @@ with st.form("output_form", clear_on_submit=False):
 
     output_type_sel = st.selectbox("Output Type*", options=OUTPUT_TYPES)
 
-    # >>> Data type travado e salvo em branco quando Output Type = Dataset
+    # Data type travado em Dataset (salvo em branco)
     if output_type_sel == "Dataset":
         st.selectbox(
             "Data type (for datasets) — locked for Dataset",
@@ -505,18 +511,15 @@ with st.form("output_form", clear_on_submit=False):
             disabled=True,
             key="output_data_type_locked"
         )
-        output_data_type = ""  # gravar em branco quando travado
+        output_data_type = ""   # importantíssimo: vai em branco no sheet quando travado
     else:
-        output_data_type = st.selectbox(
-            "Data type (for datasets)",
-            options=[""] + DATASET_DTYPES
-        )
+        output_data_type = st.selectbox("Data type (for datasets)", options=[""] + DATASET_DTYPES)
 
     output_type_other = st.text_input("Please specify the output type*") if output_type_sel.startswith("Other") else ""
     output_title = st.text_input("Output Name*")
     output_url   = st.text_input("Output URL (optional)")
 
-    # ── Geographic Coverage (logo após Output URL) ──
+    # —— Geographic Coverage (vem logo após Output URL) ——
     st.subheader("Geographic Coverage")
     st.multiselect(
         "Select countries (select 'Global' for worldwide coverage)*",
@@ -530,19 +533,14 @@ with st.form("output_form", clear_on_submit=False):
     if "Other: ______" in selected_countries:
         output_country_other = st.text_input("Please specify other geographic coverage")
 
-    # ── Cidades (sempre disponível; mesmo com Global) ──
+    # —— Cidades (sempre disponível; mesmo com Global) ——
     st.write("**Add cities for this output (optional):**")
-
-    # Países disponíveis para vincular cidades:
-    # 1) Se houver países reais selecionados → use-os (ignora Global/Other)
-    # 2) Se só Global estiver selecionado (ou nenhum) → ofereça TODOS os países
     selected_real = [c for c in selected_countries if c not in ["Global", "Other: ______"]]
     if selected_real:
         city_country_choices = [SELECT_PLACEHOLDER] + selected_real
     else:
         city_country_choices = [SELECT_PLACEHOLDER] + COUNTRY_NAMES
 
-    # Linha com seletor de país + botão de refresh 🔄 ao lado
     col_country, col_refresh = st.columns([5, 1])
     with col_country:
         city_country_select = st.selectbox(
@@ -551,13 +549,11 @@ with st.form("output_form", clear_on_submit=False):
             key=f"city_country_select_v{ss._country_for_city_version}"
         )
     with col_refresh:
-        st.write("")  # alinhamento
+        st.write("")
         if st.form_submit_button("🔄", help="Refresh countries for city selector", use_container_width=True, key="refresh_cities_country"):
-            # Atualiza a versão do seletor para forçar o Streamlit a reconstruir as opções
             ss._country_for_city_version += 1
             st.rerun()
 
-    # Campo de cidades
     c2, c3 = st.columns([5, 1])
     with c2:
         if ss._clear_city_field_out and "output_city_input" in ss:
@@ -575,7 +571,6 @@ with st.form("output_form", clear_on_submit=False):
                 ss._clear_city_field_out = True
                 st.rerun()
 
-    # Lista de cidades
     if ss.city_list_output:
         st.write("**Added cities:**")
         for i, pair in enumerate(ss.city_list_output):
@@ -586,7 +581,7 @@ with st.form("output_form", clear_on_submit=False):
                 if st.form_submit_button("🗑️ Remove", key=f"rm_city_{i}"):
                     remove_city(i); st.rerun()
 
-    # ── Additional info ──
+    # —— Additional info ——
     st.subheader("Additional Information")
     current_year = datetime.utcnow().year
     base_years_desc = list(range(current_year, 1999, -1))
@@ -604,9 +599,116 @@ with st.form("output_form", clear_on_submit=False):
         if st.form_submit_button("🗑️ Clear Form", use_container_width=True, type="secondary"):
             clear_form(); st.rerun()
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Processamento do envio (Global com cidades permitido)
-# ──────────────────────────────────────────────────────────────────────────────
+# ——————————— Função para montar as linhas que irão ao Sheets ———————————
+def _build_rows_for_preview():
+    # anos
+    final_years_sorted_desc = sorted(set(years_selected), reverse=True)
+    final_years_str = ",".join(str(y) for y in final_years_sorted_desc) if final_years_sorted_desc else ""
+
+    # mesma lógica de “uma linha por país” ou “uma linha por cidade”
+    rows = []
+    selected_countries_local = ss.output_countries[:]
+    has_cities = len(ss.city_list_output) > 0
+
+    def _mkrow(country, city, lat, lon):
+        return {
+            "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
+            "output_title": output_title,
+            "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
+            "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
+            "output_data_type": output_data_type,  # "" se Dataset travado
+            "output_url": output_url,
+            "output_country": country,
+            "output_country_other": (output_country_other if "Other: ______" in ss.output_countries else ""),
+            "output_city": city or "",
+            "output_year": final_years_str,
+            "output_desc": output_desc,
+            "output_contact": output_contact,
+            "output_email": "",
+            "output_linkedin": output_linkedin,
+            "project_url": project_url_for_output or "",
+            "submitter_email": submitter_email,
+            "is_edit": "FALSE","edit_target":"","edit_request":"New submission",
+            "approved": "FALSE",
+            "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+            "lat": lat if lat is not None else "",
+            "lon": lon if lon is not None else "",
+        }
+
+    if "Global" in selected_countries_local:
+        if has_cities:
+            # Global + cidades → grava por cidade (sem linha extra Global)
+            for pair in ss.city_list_output:
+                if "—" not in pair: continue
+                ctry, cty = [p.strip() for p in pair.split("—", 1)]
+                if ctry == "Other: ______": continue
+                lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
+                rows.append(_mkrow(ctry, cty, lat_o, lon_o))
+        else:
+            # somente Global
+            rows.append(_mkrow("Global", "", None, None))
+    else:
+        if has_cities:
+            for pair in ss.city_list_output:
+                if "—" not in pair: continue
+                ctry, cty = [p.strip() for p in pair.split("—", 1)]
+                if ctry in ["Global", "Other: ______"]: continue
+                lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
+                rows.append(_mkrow(ctry, cty, lat_o, lon_o))
+        else:
+            for ctry in [c for c in selected_countries_local if c not in ["Global","Other: ______"]]:
+                lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
+                rows.append(_mkrow(ctry, "", lat_o, lon_o))
+
+    return rows
+
+# ——————————— Pop-up de confirmação ———————————
+def _render_confirm_dialog():
+    @st.dialog("Confirm submission")
+    def _dlg(rows):
+        st.write("These row(s) will be submitted to the review queue:")
+        # mostra um preview ordenado por colunas principais
+        preview_cols = [
+            "project","output_title","output_type","output_data_type",
+            "output_country","output_city","output_year",
+            "output_url","project_url","submitter_email","lat","lon"
+        ]
+        df_prev = pd.DataFrame(rows)
+        # reordena colunas conhecidas (mantém demais no final)
+        ordered = [c for c in preview_cols if c in df_prev.columns] + [c for c in df_prev.columns if c not in preview_cols]
+        st.dataframe(df_prev[ordered], use_container_width=True, hide_index=True)
+        st.caption(f"Total rows: **{len(rows)}**")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("⬅️ Edit", use_container_width=True):
+                ss._show_confirm = False
+                ss._rows_preview = None
+                st.rerun()
+        with c2:
+            if st.button("✅ Confirm & submit", type="primary", use_container_width=True):
+                try:
+                    wsO, errO = ws_outputs()
+                    if errO or wsO is None:
+                        st.error(errO or "Worksheet unavailable for outputs."); st.stop()
+                    ok_all = True; msg_any = None
+                    for row in rows:
+                        ok, msg = _append_row(wsO, OUTPUTS_HEADERS, row)
+                        ok_all &= ok; msg_any = msg
+                        if not ok:
+                            st.error(f"⚠️ {msg}"); st.stop()
+                    if ok_all:
+                        st.success("✅ Output submission queued for review!")
+                        ss._show_confirm = False
+                        ss._rows_preview = None
+                        clear_form()
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+
+    _dlg(ss._rows_preview)
+
+# ——————————— Validação + acionar pop-up ———————————
 if submitted:
     errors = []
     if not submitter_email.strip():
@@ -622,76 +724,16 @@ if submitted:
         for e in errors: st.error(e)
         st.stop()
 
-    try:
-        wsO, errO = ws_outputs()
-        if errO or wsO is None:
-            st.error(errO or "Worksheet unavailable for outputs."); st.stop()
+    # monta as linhas, guarda em sessão e abre o pop-up
+    rows = _build_rows_for_preview()
+    if not rows:
+        st.error("Nothing to submit. Add at least one country or city.")
+        st.stop()
 
-        # anos
-        final_years_sorted_desc = sorted(set(years_selected), reverse=True)
-        final_years_str = ",".join(str(y) for y in final_years_sorted_desc) if final_years_sorted_desc else ""
+    ss._rows_preview = rows
+    ss._show_confirm = True
 
-        def save_row(country, city, lat, lon):
-            rowO = {
-                "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
-                "output_title": output_title,
-                "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
-                "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
-                "output_data_type": output_data_type,  # "" se Dataset (travado)
-                "output_url": output_url,
-                "output_country": country,
-                "output_country_other": (output_country_other if "Other: ______" in ss.output_countries else ""),
-                "output_city": city or "",
-                "output_year": final_years_str,
-                "output_desc": output_desc,
-                "output_contact": output_contact,
-                "output_email": "",
-                "output_linkedin": output_linkedin,
-                "project_url": project_url_for_output or "",
-                "submitter_email": submitter_email,
-                "is_edit": "FALSE","edit_target":"","edit_request":"New submission",
-                "approved": "FALSE",
-                "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
-                "lat": lat if lat is not None else "",
-                "lon": lon if lon is not None else "",
-            }
-            ok, msg = _append_row(wsO, OUTPUTS_HEADERS, rowO)
-            if not ok:
-                st.error(f"⚠️ {msg}"); st.stop()
+# se a flag estiver ativa, abre o diálogo
+if ss._show_confirm and ss._rows_preview:
+    _render_confirm_dialog()
 
-        # Lógica de gravação:
-        selected_countries = ss.output_countries[:]
-        has_cities = len(ss.city_list_output) > 0
-
-        if "Global" in selected_countries:
-            if has_cities:
-                # Global + cidades → grava por cidade (sem linha extra Global)
-                for pair in ss.city_list_output:
-                    if "—" not in pair: continue
-                    ctry, cty = [p.strip() for p in pair.split("—", 1)]
-                    if ctry == "Other: ______": continue
-                    lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
-                    save_row(ctry, cty, lat_o, lon_o)
-            else:
-                # Só Global, sem cidades → uma linha Global
-                save_row("Global", "", None, None)
-        else:
-            # Sem Global → se houver cidades, grava por cidade; senão, por país
-            if has_cities:
-                for pair in ss.city_list_output:
-                    if "—" not in pair: continue
-                    ctry, cty = [p.strip() for p in pair.split("—", 1)]
-                    if ctry in ["Global", "Other: ______"]: continue
-                    lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
-                    save_row(ctry, cty, lat_o, lon_o)
-            else:
-                for ctry in [c for c in selected_countries if c not in ["Global","Other: ______"]]:
-                    lat_o, lon_o = COUNTRY_CENTER_FULL.get(ctry, (None, None))
-                    save_row(ctry, "", lat_o, lon_o)
-
-        st.success("✅ Output submission queued for review!")
-        clear_form()
-        st.rerun()
-
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
