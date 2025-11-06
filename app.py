@@ -11,8 +11,6 @@ import streamlit as st
 from PIL import Image
 from datetime import datetime
 from google.oauth2.service_account import Credentials
-import folium
-from streamlit_folium import st_folium
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 0) PAGE CONFIG + LOGO
@@ -59,6 +57,7 @@ PROJECTS_HEADERS = [
     "approved","created_at"
 ]
 
+# OBS: Mantemos output_email por retrocompatibilidade, mas o app usará output_linkedin
 OUTPUTS_HEADERS = [
     "project",                 # taxonomy/fixed list
     "output_title",
@@ -70,7 +69,8 @@ OUTPUTS_HEADERS = [
     "output_year",             # string com anos separados por vírgula
     "output_desc",
     "output_contact",
-    "output_email",
+    "output_email",            # legado (preenchido como "")
+    "output_linkedin",         # novo campo solicitado
     "project_url",
     "submitter_email",
     "is_edit","edit_target","edit_request",
@@ -123,7 +123,7 @@ def _open_or_create(ws_name: str, headers: Optional[List[str]] = None):
         ws = ss.worksheet(ws_name)
     except gspread.exceptions.WorksheetNotFound:
         ncols = max(10, len(headers) if headers else 10)
-        ws = ss.add_worksheet(title=ws_name, rows=1000, cols=ncols)
+        ws = ss.add_worksheet(title=ws_name, rows=2000, cols=ncols)
         if headers:
             ws.update("A1", [headers])
     except Exception as e:
@@ -182,7 +182,7 @@ def _ulid_like():
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Países (CSV local)
+# 4) Países (CSV local) – usado para prepopulação caso novo projeto
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 
@@ -201,6 +201,7 @@ def load_country_centers():
 
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
+
 def _countries_with_global_first(names: List[str]):
     return (["Global"] + [n for n in names if n != "Global"]) if "Global" in names else (["Global"] + names)
 
@@ -224,6 +225,7 @@ if _logo_img is not None:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 6) Carregar SOMENTE aprovados (approved=TRUE)
+#    (continuamos lendo projetos apenas para pré-popular nomes/infos no envio)
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -270,54 +272,9 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Mapa + tabelas (apenas aprovados)
+# 7) SOMENTE TABELA DE OUTPUTS (prévia + detalhes “See full information”)
 # ──────────────────────────────────────────────────────────────────────────────
-if not df_projects.empty and df_projects[["lat","lon"]].dropna().shape[0] > 0:
-    groups = df_projects.dropna(subset=["lat","lon"]).groupby(["country","lat","lon"], as_index=False)
-    m = folium.Map(
-        location=[df_projects["lat"].dropna().mean(), df_projects["lon"].dropna().mean()],
-        zoom_start=2, tiles="CartoDB dark_matter"
-    )
-    for (country, lat, lon), g in groups:
-        proj_dict = {}
-        for _, r in g.iterrows():
-            pname = str(r.get("project_name","")).strip() or "(unnamed)"
-            city = str(r.get("city","")).strip()
-            url  = _clean_url(r.get("url",""))
-            proj_dict.setdefault(pname, {"cities": set(), "urls": set()})
-            if city: proj_dict[pname]["cities"].add(city)
-            if url:  proj_dict[pname]["urls"].add(url)
-        lines = ["<div style='font-size:0.9rem; color:#0f172a;'>", f"<b>{country}</b>", "<ul style='padding-left:1rem; margin:0;'>"]
-        for pname, info in proj_dict.items():
-            cities_txt = ", ".join(sorted(info["cities"])) if info["cities"] else "—"
-            url_html = ""
-            if info["urls"]:
-                u_any = sorted(info["urls"])[0]
-                url_html = " — " + f"<a href='{u_any}' target='_blank' style='color:#2563eb;text-decoration:none;'>link</a>"
-            lines.append(f"<li><b>{pname}</b> — {cities_txt}{url_html}</li>")
-        lines.append("</ul></div>")
-        html_block = "".join(lines)
-        folium.CircleMarker(
-            location=[lat, lon], radius=6, color="#38bdf8", fill=True, fill_opacity=0.9,
-            tooltip=folium.Tooltip(html_block, sticky=True, direction='top',
-                                   style="background:#ffffff; color:#0f172a; border:1px solid #cbd5e1; border-radius:8px; padding:8px;"),
-            popup=folium.Popup(html_block, max_width=380),
-        ).add_to(m)
-    st_folium(m, height=520, width=None)
-else:
-    st.info("No approved projects with lat/lon yet.")
-
-st.markdown("---")
-st.subheader("Browse existing projects (approved only)")
-if df_projects.empty:
-    st.info("No data.")
-else:
-    colsP = ["project_name","country","city","years","data_types","contact","access","url","lat","lon"]
-    colsP = [c for c in colsP if c in df_projects.columns]
-    st.dataframe(df_projects[colsP].reset_index(drop=True), use_container_width=True, hide_index=True)
-
-st.markdown("---")
-st.subheader("Browse existing outputs (approved only)")
+st.subheader("Browse outputs (approved only)")
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
     st.caption(f"⚠️ {msgO}")
@@ -325,31 +282,72 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
-        colsO = ["project","output_title","output_type","output_data_type","output_country","output_city","output_year"]
-        for c in colsO:
+        # Preview columns
+        preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
+        for c in preview_cols:
             if c not in df_outputs.columns:
                 df_outputs[c] = ""
-        st.dataframe(df_outputs[colsO].reset_index(drop=True), use_container_width=True, hide_index=True)
+        st.dataframe(
+            df_outputs[preview_cols].reset_index(drop=True),
+            use_container_width=True, hide_index=True
+        )
+
+        st.markdown("#### See full information")
+        # Expanders por linha com todas as infos
+        show_cols = [
+            ("project","Project"),
+            ("project_url","Project URL"),
+            ("output_title","Output title"),
+            ("output_type","Output type"),
+            ("output_data_type","Output data type"),
+            ("output_url","Output URL"),
+            ("output_country","Output country"),
+            ("output_city","Output city"),
+            ("output_year","Output year"),
+            ("output_desc","Description"),
+            ("output_contact","Contact"),
+            ("output_linkedin","LinkedIn"),
+        ]
+        for idx, row in df_outputs.reset_index(drop=True).iterrows():
+            label = f"{row.get('project','(no project)')} — {row.get('output_title','(no title)')}"
+            with st.expander(f"See full information: {label}"):
+                lines = []
+                for key, nice in show_cols:
+                    val = str(row.get(key,"")).strip()
+                    if key in ("project_url","output_url") and val:
+                        val = f"[{val}]({val})"
+                    lines.append(f"- **{nice}:** {val if val else '—'}")
+                st.markdown("\n".join(lines))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) SUBMISSÃO → grava no MESMO sheet, approved=FALSE (fila)
+# 8) SUBMISSÃO → agora SOMENTE OUTPUTS (fila: approved=FALSE)
+#    - Se projeto já existir (taxonomy), usamos
+#    - Se "Other: ______", solicitar detalhes do projeto (como antes)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.header("Add / Edit Entry (goes to review queue)")
-entry_kind = st.radio("What would you like to add?", ["Project","Output"], index=0, horizontal=True)
+st.header("Submit Output (goes to review queue)")
 
 if "city_list" not in st.session_state:
     st.session_state.city_list = []
 
-with st.form("UNIFIED_FORM", clear_on_submit=False):
+with st.form("OUTPUT_FORM", clear_on_submit=False):
     submitter_email = st.text_input("Submitter email (required for review)", placeholder="name@org.org")
 
-    # --------------------------- PROJECT ---------------------------
-    if entry_kind == "Project":
-        st.markdown("**Project details**")
-        countries_sel = st.multiselect("Implementation countries (one or more)", COUNTRY_NAMES)
-        st.caption("Add at least one (country — city).")
+    # Escolha do projeto (taxonomia)
+    project_tax_sel = st.selectbox("Project Name (taxonomy)", options=PROJECT_TAXONOMY)
+    project_tax_other = ""
+    is_other_project = project_tax_sel.startswith("Other")
+    if is_other_project:
+        project_tax_other = st.text_input("Please specify the project (taxonomy)")
 
+    # Se projeto não está na taxonomia → solicitar detalhes (como antes)
+    new_project_url = ""
+    new_project_contact = ""
+    countries_sel = []
+    if is_other_project:
+        st.markdown("**New project details (required if not in taxonomy)**")
+        # Países + cidades (mini UI igual à de antes)
+        countries_sel = st.multiselect("Implementation countries (one or more)", COUNTRY_NAMES)
         colc1, colc2, colc3 = st.columns([2,2,1])
         with colc1:
             selected_country = st.selectbox(
@@ -361,7 +359,7 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
             city_input = st.text_input("City (accepts multiple, separated by commas)", key="city_add_proj")
         with colc3:
             st.write("")
-            if st.form_submit_button("➕ Add"):
+            if st.form_submit_button("➕ Add city"):
                 if selected_country and selected_country != SELECT_PLACEHOLDER and city_input.strip():
                     for c in [x.strip() for x in city_input.split(",") if x.strip()]:
                         pair = f"{selected_country} — {c}"
@@ -381,141 +379,111 @@ with st.form("UNIFIED_FORM", clear_on_submit=False):
                         st.session_state.city_list.pop(i); st.rerun()
             if st.checkbox("Clear all cities"): st.session_state.city_list = []
 
-        project_name = st.text_input("Project name")
-        years  = st.text_input("Years (e.g. 2022–2024)")
-        data_types = st.text_area("Data types (Spatial? Quantitative? Qualitative?)")
-        description = st.text_area("Short description")
-        contact = st.text_input("Contact / Responsible institution")
-        access  = st.text_input("Access / License / Ethics")
-        url     = st.text_input("Project URL (optional)")
+        new_project_url = st.text_input("Project URL (optional)")
+        new_project_contact = st.text_input("Project contact / institution (optional)")
 
-        submitted = st.form_submit_button("Submit for review (Project)")
+    # Tipo de output
+    output_type_sel = st.selectbox("Output Type", options=OUTPUT_TYPES)
+    output_type_other = ""
+    if output_type_sel.startswith("Other"):
+        output_type_other = st.text_input("Please specify the output type")
 
-        if submitted:
-            if not submitter_email.strip():
-                st.warning("Please provide submitter email.")
-            elif not project_name.strip():
-                st.warning("Please provide Project name.")
-            elif not (st.session_state.city_list or countries_sel):
-                st.warning("Please add countries/cities.")
-            else:
-                pairs = st.session_state.city_list[:] if st.session_state.city_list else [f"{c} — " for c in countries_sel]
-                ws, err = ws_projects()
-                if err or ws is None:
-                    st.error(err or "Worksheet unavailable.")
+    # Mostrar data type SOMENTE se Dataset (senão, pular)
+    output_data_type = ""
+    if output_type_sel == "Dataset":
+        output_data_type = st.selectbox("Data type (for datasets)", options=DATASET_DTYPES)
+
+    output_title = st.text_input("Output Name")
+    output_url   = st.text_input("Output URL (optional)")
+
+    countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
+    output_country = st.selectbox("Geographic coverage of output", options=countries_fixed)
+    output_country_other = ""
+    if output_country.startswith("Other"):
+        output_country_other = st.text_input("Please specify the geographic coverage")
+
+    output_city = st.text_input("", placeholder="City (optional — follows formatting of 'Cities covered')")
+
+    # REMOVIDO: "Add other years..." (conforme solicitado)
+    base_years = list(range(2000, 2026))
+    years_selected = st.multiselect("Year of output release", base_years)
+    final_years_str = ",".join(str(y) for y in sorted(set(years_selected))) if years_selected else ""
+
+    output_desc = st.text_area("Short description of output")
+    output_contact = st.text_input("Name & institution of person responsible")
+    output_linkedin = st.text_input("LinkedIn address of contact")  # substitui output_email
+    project_url_for_output = st.text_input("Project URL (optional, if different)")
+
+    submitted = st.form_submit_button("Submit for review (Output)")
+
+    if submitted:
+        # validações básicas
+        if not submitter_email.strip():
+            st.warning("Please provide the submitter email.")
+        elif not output_title.strip():
+            st.warning("Please provide the Output Name.")
+        elif is_other_project and not (st.session_state.city_list or countries_sel):
+            st.warning("For a new project (Other), please add at least one country/city.")
+        else:
+            # 1) Se for “Other”, opcionalmente registrar entradas de projeto na fila (interno)
+            if is_other_project:
+                wsP, errP = ws_projects()
+                if errP or wsP is None:
+                    st.error(errP or "Worksheet unavailable for projects.")
                 else:
-                    ok_all, msg_any = True, None
+                    # cria linhas de projeto para cada par país-cidade (ou somente país)
+                    pairs = st.session_state.city_list[:] if st.session_state.city_list else [f"{c} — " for c in countries_sel]
+                    ok_allP, msg_anyP = True, None
                     for pair in pairs:
                         if "—" not in pair: continue
                         country, city = [p.strip() for p in pair.split("—",1)]
                         lat, lon = COUNTRY_CENTER_FULL.get(country, (None, None))
-                        row = {
+                        rowP = {
                             "country": country, "city": city, "lat": lat, "lon": lon,
-                            "project_name": project_name, "years": years, "status": "",
-                            "data_types": data_types, "description": description,
-                            "contact": contact, "access": access, "url": url,
+                            "project_name": project_tax_other.strip(), "years": "",
+                            "status": "", "data_types": "", "description": "",
+                            "contact": new_project_contact, "access": "", "url": new_project_url,
                             "submitter_email": submitter_email,
-                            "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
+                            "is_edit": "FALSE", "edit_target": "", "edit_request": "New project via output submission",
                             "approved": "FALSE",
                             "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                         }
-                        ok, msg = _append_row(ws, PROJECTS_HEADERS, row)
-                        ok_all &= ok; msg_any = msg
-                    if ok_all:
-                        st.success("✅ Project submission queued (approved=FALSE).")
-                        st.session_state.city_list = []
-                    else:
-                        st.error(f"⚠️ {msg_any}")
+                        okP2, msgP2 = _append_row(wsP, PROJECTS_HEADERS, rowP)
+                        ok_allP &= okP2; msg_anyP = msgP2
+                    if not ok_allP:
+                        st.error(f"⚠️ Project staging write error: {msg_anyP}")
+                        st.stop()
 
-    # --------------------------- OUTPUT ---------------------------
-    else:
-        st.markdown("**Output details**")
-
-        # Taxonomia (fixa) – quando for editar, desabilita
-        editing = bool(st.session_state.get("_OUT_before"))
-        project_tax_sel = st.selectbox(
-            "Project Name (taxonomy)",
-            options=PROJECT_TAXONOMY,
-            disabled=editing
-        )
-        project_tax_other = ""
-        if not editing and project_tax_sel.startswith("Other"):
-            project_tax_other = st.text_input("Please specify the project (taxonomy)")
-
-        output_type_sel = st.selectbox(
-            "Output Type",
-            options=OUTPUT_TYPES,
-            disabled=editing
-        )
-        output_type_other = ""
-        if not editing and output_type_sel.startswith("Other"):
-            output_type_other = st.text_input("Please specify the output type")
-
-        output_data_type = ""
-        if (editing and st.session_state.get("out_type")=="Dataset") or (not editing and output_type_sel=="Dataset"):
-            output_data_type = st.selectbox("Data type", options=DATASET_DTYPES, disabled=editing)
-
-        output_title = st.text_input("Output Name")
-        output_url   = st.text_input("Output URL (optional)")
-
-        countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
-        output_country = st.selectbox("Geographic coverage of output", options=countries_fixed, disabled=editing)
-        output_country_other = ""
-        if not editing and output_country.startswith("Other"):
-            output_country_other = st.text_input("Please specify the geographic coverage")
-
-        output_city = st.text_input("", placeholder="City (optional — follows formatting of 'Cities covered')")
-
-        base_years = list(range(2000, 2026))
-        years_selected = st.multiselect("Year of output release", base_years)
-        extra_years_raw = st.text_input("Add other years (e.g., 1998, 2026)")
-        extra_years = []
-        if extra_years_raw.strip():
-            for part in extra_years_raw.split(","):
-                s = part.strip()
-                if s.isdigit(): extra_years.append(int(s))
-        final_years = sorted(set(years_selected + extra_years))
-        final_years_str = ",".join(str(y) for y in final_years) if final_years else ""
-
-        output_desc = st.text_area("Short description of output")
-        output_contact = st.text_input("Name & institution of person responsible")
-        output_email   = st.text_input("Email of person responsible")
-        project_url_for_output = st.text_input("Project URL (optional)")
-
-        submitted = st.form_submit_button("Submit for review (Output)")
-
-        if submitted:
-            if not submitter_email.strip():
-                st.warning("Please provide the submitter email.")
-            elif not output_title.strip():
-                st.warning("Please provide the Output Name.")
+            # 2) Gravar output na fila
+            wsO, errO = ws_outputs()
+            if errO or wsO is None:
+                st.error(errO or "Worksheet unavailable for outputs.")
             else:
-                ws, err = ws_outputs()
-                if err or ws is None:
-                    st.error(err or "Worksheet unavailable.")
+                rowO = {
+                    "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
+                    "output_title": output_title,
+                    "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
+                    "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
+                    "output_data_type": (output_data_type if (output_type_sel=="Dataset") else ""),
+                    "output_url": output_url,
+                    "output_country": ("" if output_country.startswith("Other") else output_country),
+                    "output_country_other": (output_country_other if output_country.startswith("Other") else ""),
+                    "output_city": output_city,
+                    "output_year": final_years_str,
+                    "output_desc": output_desc,
+                    "output_contact": output_contact,
+                    "output_email": "",  # legado vazio
+                    "output_linkedin": output_linkedin,
+                    "project_url": (project_url_for_output or (new_project_url if is_other_project else "")),
+                    "submitter_email": submitter_email,
+                    "is_edit": "FALSE","edit_target":"","edit_request":"New submission",
+                    "approved": "FALSE",
+                    "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+                }
+                okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
+                if okO2:
+                    st.success("✅ Output submission queued (approved=FALSE).")
+                    # limpar cidades temporárias para evitar duplicação
+                    st.session_state.city_list = []
                 else:
-                    row = {
-                        "project": (project_tax_other.strip() if project_tax_sel.startswith("Other") else project_tax_sel),
-                        "output_title": output_title,
-                        "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
-                        "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
-                        "output_data_type": (output_data_type if (output_type_sel=="Dataset") else ""),
-                        "output_url": output_url,
-                        "output_country": ("" if output_country.startswith("Other") else output_country),
-                        "output_country_other": (output_country_other if output_country.startswith("Other") else ""),
-                        "output_city": output_city,
-                        "output_year": final_years_str,
-                        "output_desc": output_desc,
-                        "output_contact": output_contact,
-                        "output_email": output_email,
-                        "project_url": project_url_for_output,
-                        "submitter_email": submitter_email,
-                        "is_edit": "FALSE","edit_target":"","edit_request":"New submission",
-                        "approved": "FALSE",
-                        "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
-                    }
-                    ok, msg = _append_row(ws, OUTPUTS_HEADERS, row)
-                    if ok:
-                        st.success("✅ Output submission queued (approved=FALSE).")
-                    else:
-                        st.error(f"⚠️ {msg}")
+                    st.error(f"⚠️ {msgO2}")
