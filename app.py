@@ -5,14 +5,12 @@ from typing import Optional, List, Tuple
 import gspread
 import pandas as pd
 import re
-import requests
 import streamlit as st
 from PIL import Image
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 import folium
 from streamlit_folium import st_folium
-import json
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 0) PAGE CONFIG + LOGO
@@ -188,34 +186,7 @@ def _countries_with_global_first(names: List[str]):
         return ["Global"] + names
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Base de dados de países
-# ──────────────────────────────────────────────────────────────────────────────
-COUNTRIES_DATA_URL = "https://raw.githubusercontent.com/juliolvfilho/lista-paises/master/paises-array.json"
-
-@st.cache_data(show_spinner=False)
-def load_countries_data():
-    """Carrega a base de dados de países"""
-    try:
-        response = requests.get(COUNTRIES_DATA_URL, timeout=10)
-        countries_data = response.json()
-        
-        # Criar lista de países
-        country_list = []
-        for country in countries_data:
-            name = country.get('nome', '').strip()
-            if name:
-                country_list.append(name)
-        
-        return sorted(country_list), countries_data
-    except Exception as e:
-        st.error(f"Error loading countries data: {e}")
-        return [], []
-
-# Carregar dados de países
-COUNTRY_NAMES, COUNTRIES_DATA = load_countries_data()
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 5) Países (CSV local)
+# 4) Países (CSV local)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 
@@ -231,13 +202,7 @@ def load_country_centers():
         df["lat"] = df[c_lat].apply(_parse_number_loose)
         df["lon"] = df[c_lon].apply(_parse_number_loose)
         df = df.dropna(subset=["lat", "lon"])
-        
-        # Criar mapeamento de países para coordenadas
-        mapping = {}
-        for _, row in df.iterrows():
-            country_name = row[c_country].strip()
-            mapping[country_name] = (float(row["lat"]), float(row["lon"]))
-        
+        mapping = {row[c_country]: (float(row["lat"]), float(row["lon"])) for _, row in df.iterrows()}
         return mapping, df
     except Exception as e:
         st.error(f"Error loading country centers: {e}")
@@ -246,8 +211,14 @@ def load_country_centers():
 # Carregar dados de países
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
 
+# Garantir que COUNTRY_NAMES existe mesmo se houve erro no carregamento
+if not COUNTRY_CENTER_FULL:
+    COUNTRY_NAMES = []
+else:
+    COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Header
+# 5) Header
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="border:1px solid #334155; background:#0b1220; border-radius:14px;
@@ -265,7 +236,7 @@ if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Carregamento de dados
+# 6) Carregamento de dados
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -320,7 +291,7 @@ def load_outputs_public():
         return pd.DataFrame(), False, f"Read error: {e}"
 
 if st.sidebar.button("🔄 Check updates"):
-    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear(); load_countries_data.clear()
+    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear()
     st.rerun()
 
 df_projects, okP, msgP = load_projects_public()
@@ -328,7 +299,7 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Mapa de OUTPUTS aprovados
+# 7) Mapa de OUTPUTS aprovados
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Projects & outputs map (approved outputs)")
 df_outputs_map, okOm, msgOm = load_outputs_public()
@@ -382,7 +353,7 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) Tabela de outputs
+# 8) Tabela de outputs
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -492,7 +463,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10) SUBMISSÃO DE OUTPUT - FLUXO SIMPLIFICADO
+# 9) SUBMISSÃO DE OUTPUT - SIMPLIFICADA
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
@@ -502,41 +473,28 @@ st.header("Submit Output (goes to review queue)")
 if "form_data" not in st.session_state:
     st.session_state.form_data = {
         "cities": [],
-        "city_coords": {},
         "countries_applied": False
     }
 
 # Funções para gerenciar cidades
-def add_city(country_name, city_name):
-    """Adiciona uma cidade à lista usando coordenadas do país"""
-    if country_name and country_name != SELECT_PLACEHOLDER and city_name and city_name.strip():
-        pair = f"{country_name} — {city_name.strip()}"
+def add_city(country, city_name):
+    """Adiciona uma cidade à lista"""
+    if country and country != SELECT_PLACEHOLDER and city_name.strip():
+        pair = f"{country} — {city_name}"
         if pair not in st.session_state.form_data["cities"]:
-            # Usa coordenadas do país
-            lat, lon = COUNTRY_CENTER_FULL.get(country_name, (None, None))
-            
             st.session_state.form_data["cities"].append(pair)
-            if lat is not None and lon is not None:
-                st.session_state.form_data["city_coords"][pair] = (lat, lon)
-                st.success(f"✅ Added {city_name.strip()}, {country_name}")
-            else:
-                st.session_state.form_data["city_coords"][pair] = (None, None)
-                st.warning(f"⚠️ Added {city_name.strip()}, {country_name} (no coordinates found)")
-        return True
+            return True
     return False
 
 def remove_city(index):
     """Remove uma cidade da lista"""
     if 0 <= index < len(st.session_state.form_data["cities"]):
-        removed = st.session_state.form_data["cities"].pop(index)
-        if removed in st.session_state.form_data["city_coords"]:
-            del st.session_state.form_data["city_coords"][removed]
+        st.session_state.form_data["cities"].pop(index)
 
 def clear_form():
     """Limpa o formulário"""
     st.session_state.form_data = {
         "cities": [],
-        "city_coords": {},
         "countries_applied": False
     }
 
@@ -582,7 +540,7 @@ with st.form("output_form", clear_on_submit=False):
         
         new_project_countries = st.multiselect(
             "Implementation countries (one or more)*",
-            options=COUNTRY_NAMES
+            COUNTRY_NAMES
         )
         
         st.write("**Add cities for the new project:**")
@@ -663,11 +621,7 @@ with st.form("output_form", clear_on_submit=False):
         for i, city_pair in enumerate(st.session_state.form_data["cities"]):
             col1, col2 = st.columns([4, 1])
             with col1:
-                coords = st.session_state.form_data["city_coords"].get(city_pair, (None, None))
-                if coords[0] and coords[1]:
-                    st.write(f"📍 {city_pair} (Country coordinates: {coords[0]:.4f}, {coords[1]:.4f})")
-                else:
-                    st.write(f"📍 {city_pair} (Country coordinates not available)")
+                st.write(f"📍 {city_pair}")
             with col2:
                 remove_btn = st.form_submit_button("🗑️ Remove", key=f"remove_{i}")
                 if remove_btn:
@@ -678,34 +632,14 @@ with st.form("output_form", clear_on_submit=False):
     if st.session_state.form_data["cities"] and not is_global:
         st.write("**Map Preview:**")
         
-        # Encontrar centro do mapa baseado nas cidades com coordenadas
-        cities_with_coords = [pair for pair in st.session_state.form_data["cities"] 
-                             if st.session_state.form_data["city_coords"].get(pair, (None, None))[0] is not None]
-        
-        if cities_with_coords:
-            lats = [st.session_state.form_data["city_coords"][pair][0] for pair in cities_with_coords]
-            lons = [st.session_state.form_data["city_coords"][pair][1] for pair in cities_with_coords]
-            center_lat = sum(lats) / len(lats)
-            center_lon = sum(lons) / len(lons)
+        # Encontrar centro do mapa baseado nos países selecionados
+        available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+        if available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
+            center_lat, center_lon = COUNTRY_CENTER_FULL[available_countries[0]]
         else:
-            # Fallback para centro do primeiro país
-            available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
-            if available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
-                center_lat, center_lon = COUNTRY_CENTER_FULL[available_countries[0]]
-            else:
-                center_lat, center_lon = 0, 0
+            center_lat, center_lon = 0, 0
         
         m = folium.Map(location=[center_lat, center_lon], zoom_start=3, tiles="CartoDB positron")
-        
-        # Adicionar marcadores para cada cidade com coordenadas
-        for city_pair in cities_with_coords:
-            coords = st.session_state.form_data["city_coords"][city_pair]
-            folium.Marker(
-                location=coords,
-                popup=city_pair,
-                tooltip=city_pair,
-                icon=folium.Icon(color="green", icon="info-sign")
-            ).add_to(m)
         
         # Adicionar círculos para países selecionados
         for country in output_countries:
@@ -785,10 +719,10 @@ if submitted:
                 st.stop()
             
             # Países sem cidades específicas
-            for country_name in new_project_countries:
-                latp, lonp = COUNTRY_CENTER_FULL.get(country_name, (None, None))
+            for country in new_project_countries:
+                latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
                 rowP = {
-                    "country": country_name, 
+                    "country": country, 
                     "city": "", 
                     "lat": latp, 
                     "lon": lonp,
@@ -812,15 +746,11 @@ if submitted:
             # Cidades
             for city_pair in st.session_state.form_data["cities"]:
                 if "—" in city_pair:
-                    country_name, city = [p.strip() for p in city_pair.split("—",1)]
-                    coords = st.session_state.form_data["city_coords"].get(city_pair, (None, None))
-                    if coords[0] and coords[1]:
-                        latp, lonp = coords
-                    else:
-                        latp, lonp = COUNTRY_CENTER_FULL.get(country_name, (None, None))
+                    country, city = [p.strip() for p in city_pair.split("—",1)]
+                    latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
                     
                     rowP = {
-                        "country": country_name, 
+                        "country": country, 
                         "city": city, 
                         "lat": latp, 
                         "lon": lonp,
@@ -839,4 +769,64 @@ if submitted:
                         "approved": "FALSE",
                         "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
                     }
-                    _append_row(wsP, PROJECTS_
+                    _append_row(wsP, PROJECTS_HEADERS, rowP)
+        
+        # 2) Gravar output
+        wsO, errO = ws_outputs()
+        if errO or wsO is None:
+            st.error(errO or "Worksheet unavailable for outputs.")
+            st.stop()
+        
+        # Determinar coordenadas
+        lat_o, lon_o = (None, None)
+        available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+        
+        if not is_global and available_countries:
+            # Usa centro do primeiro país selecionado
+            if available_countries[0] in COUNTRY_CENTER_FULL:
+                lat_o, lon_o = COUNTRY_CENTER_FULL[available_countries[0]]
+        
+        # Preparar dados
+        output_cities_str = ", ".join(st.session_state.form_data["cities"])
+        output_countries_str = ", ".join(output_countries)
+        
+        final_years_sorted_desc = sorted(set(years_selected), reverse=True)
+        final_years_str = ",".join(str(y) for y in final_years_sorted_desc) if final_years_sorted_desc else ""
+        
+        if output_type_sel != "Dataset":
+            output_data_type = ""
+        
+        rowO = {
+            "project": (project_tax_other.strip() if is_other_project else project_tax_sel),
+            "output_title": output_title,
+            "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
+            "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
+            "output_data_type": output_data_type,
+            "output_url": output_url,
+            "output_country": output_countries_str,
+            "output_country_other": (output_country_other if "Other: ______" in output_countries else ""),
+            "output_city": output_cities_str,
+            "output_year": final_years_str,
+            "output_desc": output_desc,
+            "output_contact": output_contact,
+            "output_email": "",
+            "output_linkedin": output_linkedin,
+            "project_url": (project_url_for_output or (new_project_url if is_other_project else "")),
+            "submitter_email": submitter_email,
+            "is_edit": "FALSE", "edit_target": "", "edit_request": "New submission",
+            "approved": "FALSE",
+            "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
+            "lat": lat_o if lat_o is not None else "",
+            "lon": lon_o if lon_o is not None else "",
+        }
+        
+        okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
+        if okO2:
+            st.success("✅ Output submission queued for review!")
+            st.balloons()
+            clear_form()
+        else:
+            st.error(f"⚠️ Error saving output: {msgO2}")
+            
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
