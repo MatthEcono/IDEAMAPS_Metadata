@@ -247,7 +247,82 @@ def find_city_coordinates(country_name: str, city_name: str) -> Tuple[Optional[f
     return geocode_city(city_name, country_name)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5) Países (CSV local)
+# 5) Base de dados de cidades do mundo
+# ──────────────────────────────────────────────────────────────────────────────
+CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
+WORLD_CITIES_URL = "https://raw.githubusercontent.com/joelacus/world-cities/master/world-cities.csv"
+
+@st.cache_data(show_spinner=False)
+def load_world_cities():
+    """Carrega o arquivo de cidades do mundo com coordenadas"""
+    try:
+        # Tenta carregar localmente primeiro
+        if CITIES_CSV_PATH.exists():
+            df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        else:
+            # Se não existe localmente, baixa do GitHub
+            try:
+                df = pd.read_csv(WORLD_CITIES_URL, dtype=str, encoding="utf-8", on_bad_lines="skip")
+                # Salva localmente para uso futuro
+                CITIES_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+                df.to_csv(CITIES_CITIES_PATH, index=False, encoding="utf-8")
+            except Exception as e:
+                st.error(f"Error downloading cities data: {e}")
+                return pd.DataFrame(columns=['country', 'name', 'lat', 'lng'])
+        
+        # Normaliza nomes das colunas
+        df.columns = [c.strip().lower() for c in df.columns]
+        
+        # Mapeia possíveis nomes de colunas
+        col_mapping = {
+            'name': 'city',
+            'country': 'country', 
+            'lat': 'lat',
+            'lng': 'lon',
+            'latitude': 'lat',
+            'longitude': 'lon'
+        }
+        
+        # Renomeia colunas para padrão
+        for old_col, new_col in col_mapping.items():
+            if old_col in df.columns and new_col not in df.columns:
+                df[new_col] = df[old_col]
+        
+        # Garante que temos as colunas necessárias
+        required_cols = ['country', 'city', 'lat', 'lon']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"CSV de cidades está faltando colunas: {missing_cols}")
+            return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
+        
+        # Converte coordenadas
+        df["lat"] = df["lat"].apply(_parse_number_loose)
+        df["lon"] = df["lon"].apply(_parse_number_loose)
+        df = df.dropna(subset=["lat", "lon"])
+        
+        return df[['country', 'city', 'lat', 'lon']]
+    except Exception as e:
+        st.error(f"Erro ao carregar cidades: {e}")
+        return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
+
+@st.cache_data(show_spinner=False)
+def get_cities_by_country(country_name):
+    """Retorna lista de cidades para um país específico"""
+    cities_df = load_world_cities()
+    if cities_df.empty:
+        return []
+    
+    # Filtra cidades pelo país
+    country_cities = cities_df[cities_df['country'].str.strip().str.lower() == country_name.strip().lower()]
+    
+    # Remove duplicatas e ordena
+    unique_cities = country_cities[['city', 'lat', 'lon']].drop_duplicates(subset=['city'])
+    unique_cities = unique_cities.sort_values('city')
+    
+    return unique_cities.to_dict('records')
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 6) Países (CSV local)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
 
@@ -271,6 +346,7 @@ def load_country_centers():
 
 # Carregar dados de países
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
+WORLD_CITIES = load_world_cities()
 
 # Garantir que COUNTRY_NAMES existe mesmo se houve erro no carregamento
 if not COUNTRY_CENTER_FULL:
@@ -279,7 +355,7 @@ else:
     COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Header
+# 7) Header
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="border:1px solid #334155; background:#0b1220; border-radius:14px;
@@ -305,7 +381,7 @@ else:
     st.sidebar.error("❌ Geocoding API: Not configured")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Carregamento de dados
+# 8) Carregamento de dados
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -360,7 +436,7 @@ def load_outputs_public():
         return pd.DataFrame(), False, f"Read error: {e}"
 
 if st.sidebar.button("🔄 Check updates"):
-    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear()
+    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear(); load_world_cities.clear()
     st.rerun()
 
 df_projects, okP, msgP = load_projects_public()
@@ -368,7 +444,7 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Mapa de OUTPUTS aprovados
+# 9) Mapa de OUTPUTS aprovados
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Projects & outputs map (approved outputs)")
 df_outputs_map, okOm, msgOm = load_outputs_public()
@@ -422,7 +498,7 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) Tabela de outputs
+# 10) Tabela de outputs
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -532,7 +608,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 10) SUBMISSÃO DE OUTPUT - COM GEOCODING API ATIVA
+# 11) SUBMISSÃO DE OUTPUT - COM SELEÇÃO DE CIDADES
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
@@ -543,27 +619,27 @@ if "form_data" not in st.session_state:
     st.session_state.form_data = {
         "cities": [],
         "city_coords": {},
-        "countries_applied": False
+        "countries_applied": False,
+        "selected_city": SELECT_PLACEHOLDER
     }
 
 # Funções para gerenciar cidades
 def add_city(country, city_name):
     """Adiciona uma cidade à lista usando Geocoding API"""
-    if country and country != SELECT_PLACEHOLDER and city_name.strip():
-        for city in [x.strip() for x in city_name.split(",") if x.strip()]:
-            pair = f"{country} — {city}"
-            if pair not in st.session_state.form_data["cities"]:
-                # Usa Geocoding API para encontrar coordenadas
-                with st.spinner(f"🔍 Finding coordinates for {city}, {country}..."):
-                    lat, lon = find_city_coordinates(country, city)
-                
-                st.session_state.form_data["cities"].append(pair)
-                if lat is not None and lon is not None:
-                    st.session_state.form_data["city_coords"][pair] = (lat, lon)
-                    st.success(f"✅ Found coordinates for {city}, {country}")
-                else:
-                    st.session_state.form_data["city_coords"][pair] = (None, None)
-                    st.warning(f"⚠️ Could not find coordinates for {city}, {country}")
+    if country and country != SELECT_PLACEHOLDER and city_name and city_name != SELECT_PLACEHOLDER:
+        pair = f"{country} — {city_name}"
+        if pair not in st.session_state.form_data["cities"]:
+            # Usa Geocoding API para encontrar coordenadas
+            with st.spinner(f"🔍 Finding coordinates for {city_name}, {country}..."):
+                lat, lon = find_city_coordinates(country, city_name)
+            
+            st.session_state.form_data["cities"].append(pair)
+            if lat is not None and lon is not None:
+                st.session_state.form_data["city_coords"][pair] = (lat, lon)
+                st.success(f"✅ Found coordinates for {city_name}, {country}")
+            else:
+                st.session_state.form_data["city_coords"][pair] = (None, None)
+                st.warning(f"⚠️ Could not find coordinates for {city_name}, {country}")
         return True
     return False
 
@@ -579,7 +655,8 @@ def clear_form():
     st.session_state.form_data = {
         "cities": [],
         "city_coords": {},
-        "countries_applied": False
+        "countries_applied": False,
+        "selected_city": SELECT_PLACEHOLDER
     }
 
 # Formulário principal
@@ -628,22 +705,35 @@ with st.form("output_form", clear_on_submit=False):
         )
         
         st.write("**Add cities for the new project:**")
-        col1, col2, col3 = st.columns([2, 2, 1])
-        with col1:
-            new_country_select = st.selectbox(
-                "Country",
-                options=[SELECT_PLACEHOLDER] + new_project_countries if new_project_countries else [SELECT_PLACEHOLDER],
-                key="new_country"
-            )
-        with col2:
-            new_city_input = st.text_input("City name", placeholder="Enter city name", key="new_city")
-        with col3:
-            st.write("")
-            st.write("")
-            add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
-            if add_new_city:
-                if add_city(new_country_select, new_city_input):
-                    st.rerun()
+        
+        if new_project_countries:
+            # Seleção de país para cidade
+            col_country, col_city, col_btn = st.columns([2, 2, 1])
+            with col_country:
+                new_country_select = st.selectbox(
+                    "Select country",
+                    options=[SELECT_PLACEHOLDER] + new_project_countries,
+                    key="new_country_select"
+                )
+            with col_city:
+                # Carrega cidades para o país selecionado
+                cities_list = [SELECT_PLACEHOLDER]
+                if new_country_select and new_country_select != SELECT_PLACEHOLDER:
+                    cities_data = get_cities_by_country(new_country_select)
+                    cities_list += [city['city'] for city in cities_data]
+                
+                new_city_select = st.selectbox(
+                    "Select city",
+                    options=cities_list,
+                    key="new_city_select"
+                )
+            with col_btn:
+                st.write("")
+                st.write("")
+                add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
+                if add_new_city:
+                    if add_city(new_country_select, new_city_select):
+                        st.rerun()
         
         new_project_url = st.text_input("Project URL (optional)")
         new_project_contact = st.text_input("Project contact / institution (optional)")
@@ -670,21 +760,32 @@ with st.form("output_form", clear_on_submit=False):
         
         if available_countries:
             st.write("**Add cities for this output:**")
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
+            
+            col_country_out, col_city_out, col_btn_out = st.columns([2, 2, 1])
+            with col_country_out:
                 output_country_select = st.selectbox(
-                    "Country",
+                    "Select country",
                     options=[SELECT_PLACEHOLDER] + available_countries,
-                    key="output_country"
+                    key="output_country_select"
                 )
-            with col2:
-                output_city_input = st.text_input("City name", placeholder="Enter city name", key="output_city")
-            with col3:
+            with col_city_out:
+                # Carrega cidades para o país selecionado
+                cities_list_out = [SELECT_PLACEHOLDER]
+                if output_country_select and output_country_select != SELECT_PLACEHOLDER:
+                    cities_data_out = get_cities_by_country(output_country_select)
+                    cities_list_out += [city['city'] for city in cities_data_out]
+                
+                output_city_select = st.selectbox(
+                    "Select city",
+                    options=cities_list_out,
+                    key="output_city_select"
+                )
+            with col_btn_out:
                 st.write("")
                 st.write("")
                 add_output_city = st.form_submit_button("➕ Add City", use_container_width=True)
                 if add_output_city:
-                    if add_city(output_country_select, output_city_input):
+                    if add_city(output_country_select, output_city_select):
                         st.rerun()
     
     # Lista de cidades adicionadas
