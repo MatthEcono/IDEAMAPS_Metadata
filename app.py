@@ -541,45 +541,54 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT - VERSÃO SIMPLIFICADA E CORRIGIDA
+# 9) SUBMISSÃO DE OUTPUT - VERSÃO COMPLETA COM CIDADES
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
 
-# Inicialização simplificada do estado
-if "form_initialized" not in st.session_state:
-    st.session_state.form_initialized = True
-    st.session_state.city_list = []
-    st.session_state.city_coordinates = {}
-    st.session_state.countries_applied = False
+# Inicialização do estado
+if "form_data" not in st.session_state:
+    st.session_state.form_data = {
+        "cities": [],
+        "city_coords": {},
+        "countries_applied": False
+    }
 
-# Funções auxiliares
-def add_city(country, city_name, is_new_project=False):
+# Funções para gerenciar cidades
+def add_city(country, city_name):
     """Adiciona uma cidade à lista"""
     if country and country != SELECT_PLACEHOLDER and city_name.strip():
         for city in [x.strip() for x in city_name.split(",") if x.strip()]:
             pair = f"{country} — {city}"
-            if pair not in st.session_state.city_list:
-                st.session_state.city_list.append(pair)
+            if pair not in st.session_state.form_data["cities"]:
+                st.session_state.form_data["cities"].append(pair)
                 lat, lon = find_city_coordinates(country, city)
                 if lat and lon:
-                    st.session_state.city_coordinates[pair] = (lat, lon)
+                    st.session_state.form_data["city_coords"][pair] = (lat, lon)
         return True
     return False
 
-def remove_city(city_index):
+def remove_city(index):
     """Remove uma cidade da lista"""
-    if 0 <= city_index < len(st.session_state.city_list):
-        removed_city = st.session_state.city_list.pop(city_index)
-        if removed_city in st.session_state.city_coordinates:
-            del st.session_state.city_coordinates[removed_city]
+    if 0 <= index < len(st.session_state.form_data["cities"]):
+        removed = st.session_state.form_data["cities"].pop(index)
+        if removed in st.session_state.form_data["city_coords"]:
+            del st.session_state.form_data["city_coords"][removed]
+
+def clear_form():
+    """Limpa o formulário"""
+    st.session_state.form_data = {
+        "cities": [],
+        "city_coords": {},
+        "countries_applied": False
+    }
 
 # Formulário principal
-with st.form("output_form", clear_on_submit=True):
-    st.subheader("Output Details")
+with st.form("output_form", clear_on_submit=False):
+    st.subheader("Basic Information")
     
-    # Campos básicos
+    # Campos obrigatórios
     submitter_email = st.text_input(
         "Submitter email (required for review)*",
         placeholder="name@org.org"
@@ -611,32 +620,37 @@ with st.form("output_form", clear_on_submit=True):
     output_title = st.text_input("Output Name*")
     output_url = st.text_input("Output URL (optional)")
     
-    # Informações do novo projeto (se aplicável)
+    # Seção para novo projeto
     if is_other_project:
         st.subheader("New Project Details")
+        
         new_project_countries = st.multiselect(
             "Implementation countries (one or more)*",
             COUNTRY_NAMES
         )
         
-        col1, col2 = st.columns([3, 1])
+        st.write("**Add cities for the new project:**")
+        col1, col2, col3 = st.columns([2, 2, 1])
         with col1:
             new_country_select = st.selectbox(
-                "Country for city",
-                options=[SELECT_PLACEHOLDER] + new_project_countries if new_project_countries else [SELECT_PLACEHOLDER]
+                "Country",
+                options=[SELECT_PLACEHOLDER] + new_project_countries if new_project_countries else [SELECT_PLACEHOLDER],
+                key="new_country"
             )
-            new_city_input = st.text_input("City name", placeholder="Enter city name")
         with col2:
+            new_city_input = st.text_input("City name", placeholder="Enter city name", key="new_city")
+        with col3:
             st.write("")
             st.write("")
-            if st.form_submit_button("➕ Add City", use_container_width=True):
-                if add_city(new_country_select, new_city_input, is_new_project=True):
+            add_new_city = st.form_submit_button("➕ Add City", use_container_width=True)
+            if add_new_city:
+                if add_city(new_country_select, new_city_input):
                     st.rerun()
         
         new_project_url = st.text_input("Project URL (optional)")
         new_project_contact = st.text_input("Project contact / institution (optional)")
     
-    # Cobertura geográfica
+    # Cobertura geográfica do output
     st.subheader("Geographic Coverage")
     
     output_countries = st.multiselect(
@@ -646,47 +660,92 @@ with st.form("output_form", clear_on_submit=True):
     
     is_global = "Global" in output_countries
     if is_global:
-        st.info("Global coverage selected")
+        st.info("🌍 Global coverage selected - city selection is disabled")
     
     output_country_other = ""
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage")
     
-    # Cidades para output
+    # Seção de cidades para o output
     if not is_global:
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         
         if available_countries:
             st.write("**Add cities for this output:**")
-            col1, col2 = st.columns([3, 1])
+            col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
                 output_country_select = st.selectbox(
                     "Country",
-                    options=[SELECT_PLACEHOLDER] + available_countries
+                    options=[SELECT_PLACEHOLDER] + available_countries,
+                    key="output_country"
                 )
-                output_city_input = st.text_input("City name", placeholder="Enter city name", key="output_city")
             with col2:
+                output_city_input = st.text_input("City name", placeholder="Enter city name", key="output_city")
+            with col3:
                 st.write("")
                 st.write("")
-                if st.form_submit_button("➕ Add", use_container_width=True):
+                add_output_city = st.form_submit_button("➕ Add City", use_container_width=True)
+                if add_output_city:
                     if add_city(output_country_select, output_city_input):
                         st.rerun()
     
-    # Lista de cidades
-    if st.session_state.city_list:
+    # Lista de cidades adicionadas
+    if st.session_state.form_data["cities"]:
         st.write("**Added cities:**")
-        for i, city_pair in enumerate(st.session_state.city_list):
+        for i, city_pair in enumerate(st.session_state.form_data["cities"]):
             col1, col2 = st.columns([4, 1])
             with col1:
-                coords = st.session_state.city_coordinates.get(city_pair, (None, None))
+                coords = st.session_state.form_data["city_coords"].get(city_pair, (None, None))
                 if coords[0] and coords[1]:
-                    st.write(f"📍 {city_pair} ({coords[0]:.4f}, {coords[1]:.4f})")
+                    st.write(f"📍 {city_pair} (Lat: {coords[0]:.4f}, Lon: {coords[1]:.4f})")
                 else:
-                    st.write(f"📍 {city_pair} (coordinates not found)")
+                    st.write(f"📍 {city_pair} (⚠️ coordinates not found)")
             with col2:
-                if st.form_submit_button("🗑️", key=f"remove_{i}"):
+                remove_btn = st.form_submit_button("🗑️ Remove", key=f"remove_{i}")
+                if remove_btn:
                     remove_city(i)
                     st.rerun()
+    
+    # Mapa de preview
+    if st.session_state.form_data["cities"] and not is_global:
+        st.write("**Map Preview:**")
+        
+        # Encontrar centro do mapa
+        lats = [coords[0] for coords in st.session_state.form_data["city_coords"].values() if coords[0]]
+        lons = [coords[1] for coords in st.session_state.form_data["city_coords"].values() if coords[1]]
+        
+        if lats and lons:
+            center_lat = sum(lats) / len(lats)
+            center_lon = sum(lons) / len(lons)
+        else:
+            center_lat, center_lon = 0, 0
+        
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=3, tiles="CartoDB positron")
+        
+        # Adicionar marcadores para cada cidade com coordenadas
+        for city_pair, coords in st.session_state.form_data["city_coords"].items():
+            if coords[0] and coords[1]:
+                folium.Marker(
+                    location=coords,
+                    popup=city_pair,
+                    tooltip=city_pair,
+                    icon=folium.Icon(color="green", icon="info-sign")
+                ).add_to(m)
+        
+        # Adicionar círculos para países selecionados
+        for country in output_countries:
+            if country in COUNTRY_CENTER_FULL and country not in ["Global", "Other: ______"]:
+                folium.CircleMarker(
+                    location=COUNTRY_CENTER_FULL[country],
+                    radius=10,
+                    popup=country,
+                    tooltip=country,
+                    color="blue",
+                    fill=True,
+                    fill_opacity=0.6
+                ).add_to(m)
+        
+        st_folium(m, height=300, width=None)
     
     # Informações adicionais
     st.subheader("Additional Information")
@@ -700,30 +759,41 @@ with st.form("output_form", clear_on_submit=True):
     output_linkedin = st.text_input("LinkedIn address of contact")
     project_url_for_output = st.text_input("Project URL (optional, if different)")
     
-    # Botão de submit principal
-    submitted = st.form_submit_button(
-        "✅ Submit for Review",
-        use_container_width=True,
-        type="primary"
-    )
+    # Botões de ação
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        submitted = st.form_submit_button(
+            "✅ Submit for Review",
+            use_container_width=True,
+            type="primary"
+        )
+    with col2:
+        clear_btn = st.form_submit_button(
+            "🗑️ Clear Form",
+            use_container_width=True,
+            type="secondary"
+        )
+        if clear_btn:
+            clear_form()
+            st.rerun()
 
 # Processar submissão
 if submitted:
-    # Validações básicas
+    # Validações
     errors = []
     
     if not submitter_email.strip():
-        errors.append("Submitter email is required")
+        errors.append("❌ Submitter email is required")
     if not output_title.strip():
-        errors.append("Output name is required")
+        errors.append("❌ Output name is required")
     if not output_countries:
-        errors.append("At least one country must be selected")
+        errors.append("❌ At least one country must be selected")
     if output_type_sel == "Dataset" and output_data_type == SELECT_PLACEHOLDER:
-        errors.append("Data type is required for datasets")
+        errors.append("❌ Data type is required for datasets")
     if is_other_project and not project_tax_other.strip():
-        errors.append("Project name is required when selecting 'Other'")
-    if is_other_project and not st.session_state.city_list and not new_project_countries:
-        errors.append("For new projects, please add at least one country or city")
+        errors.append("❌ Project name is required when selecting 'Other'")
+    if is_other_project and not st.session_state.form_data["cities"] and not new_project_countries:
+        errors.append("❌ For new projects, please add at least one country or city")
     
     if errors:
         for error in errors:
@@ -755,10 +825,10 @@ if submitted:
                 _append_row(wsP, PROJECTS_HEADERS, rowP)
             
             # Cidades
-            for city_pair in st.session_state.city_list:
+            for city_pair in st.session_state.form_data["cities"]:
                 if "—" in city_pair:
                     country, city = [p.strip() for p in city_pair.split("—",1)]
-                    coords = st.session_state.city_coordinates.get(city_pair, (None, None))
+                    coords = st.session_state.form_data["city_coords"].get(city_pair, (None, None))
                     if coords[0] and coords[1]:
                         latp, lonp = coords
                     else:
@@ -786,9 +856,9 @@ if submitted:
         lat_o, lon_o = (None, None)
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         
-        if not is_global and available_countries and st.session_state.city_list:
-            first_city = st.session_state.city_list[0]
-            coords = st.session_state.city_coordinates.get(first_city, (None, None))
+        if not is_global and available_countries and st.session_state.form_data["cities"]:
+            first_city = st.session_state.form_data["cities"][0]
+            coords = st.session_state.form_data["city_coords"].get(first_city, (None, None))
             if coords[0] and coords[1]:
                 lat_o, lon_o = coords
             elif available_countries:
@@ -797,7 +867,7 @@ if submitted:
                     lat_o, lon_o = COUNTRY_CENTER_FULL[first_country]
         
         # Preparar dados
-        output_cities_str = ", ".join(st.session_state.city_list)
+        output_cities_str = ", ".join(st.session_state.form_data["cities"])
         output_countries_str = ", ".join(output_countries)
         
         final_years_sorted_desc = sorted(set(years_selected), reverse=True)
@@ -833,9 +903,8 @@ if submitted:
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
             st.success("✅ Output submission queued for review!")
-            st.session_state.city_list = []
-            st.session_state.city_coordinates = {}
-            st.session_state.countries_applied = False
+            st.balloons()
+            clear_form()
         else:
             st.error(f"⚠️ Error saving output: {msgO2}")
             
