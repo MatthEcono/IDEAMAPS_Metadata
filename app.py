@@ -187,11 +187,74 @@ def _countries_with_global_first(names: List[str]):
         return ["Global"] + names
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Países e Cidades (CSV local/remoto)
+# 4) Geocoding API para coordenadas das cidades
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_geocoding_api_key():
+    """Obtém a chave da API de Geocoding dos secrets do Streamlit"""
+    return st.secrets.get("GEOCODING_API_KEY")
+
+def geocode_city(city_name: str, country_name: str = None) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Usa Geocoding API para obter coordenadas de uma cidade
+    Retorna (lat, lon) ou (None, None) se não encontrado
+    """
+    api_key = get_geocoding_api_key()
+    if not api_key:
+        st.error("❌ Geocoding API key not configured")
+        return None, None
+    
+    # Prepara a query
+    query = city_name
+    if country_name:
+        query += f", {country_name}"
+    
+    try:
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {
+            "address": query,
+            "key": api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if data["status"] == "OK" and data["results"]:
+            location = data["results"][0]["geometry"]["location"]
+            return location["lat"], location["lng"]
+        else:
+            st.warning(f"⚠️ Could not find coordinates for {query}: {data.get('status', 'Unknown error')}")
+            return None, None
+            
+    except Exception as e:
+        st.error(f"❌ Geocoding API error for {query}: {str(e)}")
+        return None, None
+
+def find_city_coordinates(country_name: str, city_name: str) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Encontra coordenadas para uma cidade específica usando Geocoding API
+    Primeiro tenta com país, depois sem país se não encontrar
+    """
+    if not city_name or not city_name.strip():
+        return None, None
+    
+    city_name = city_name.strip()
+    country_name = country_name.strip() if country_name else None
+    
+    # Tenta primeiro com país
+    if country_name:
+        lat, lon = geocode_city(city_name, country_name)
+        if lat is not None and lon is not None:
+            return lat, lon
+    
+    # Se não encontrou com país, tenta sem país
+    lat, lon = geocode_city(city_name)
+    return lat, lon
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5) Países (CSV local)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
-CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
-WORLD_CITIES_URL = "https://raw.githubusercontent.com/joelacus/world-cities/master/world-cities.csv"
 
 @st.cache_data(show_spinner=False)
 def load_country_centers():
@@ -211,83 +274,8 @@ def load_country_centers():
         st.error(f"Error loading country centers: {e}")
         return {}, pd.DataFrame()
 
-@st.cache_data(show_spinner=False)
-def load_world_cities():
-    """Carrega o arquivo de cidades do mundo com coordenadas - baixa do GitHub se necessário"""
-    try:
-        # Tenta carregar localmente primeiro
-        if CITIES_CSV_PATH.exists():
-            df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
-        else:
-            # Se não existe localmente, baixa do GitHub
-            try:
-                df = pd.read_csv(WORLD_CITIES_URL, dtype=str, encoding="utf-8", on_bad_lines="skip")
-                # Salva localmente para uso futuro
-                CITIES_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-                df.to_csv(CITIES_CSV_PATH, index=False, encoding="utf-8")
-            except Exception as e:
-                st.error(f"Error downloading cities data: {e}")
-                return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
-        
-        # Normaliza nomes das colunas
-        df.columns = [c.strip().lower() for c in df.columns]
-        
-        # Mapeia possíveis nomes de colunas
-        col_mapping = {
-            'name': 'city',
-            'country_name': 'country', 
-            'lat': 'lat',
-            'lng': 'lon',
-            'latitude': 'lat',
-            'longitude': 'lon',
-            'country': 'country',
-            'city': 'city'
-        }
-        
-        # Renomeia colunas para padrão
-        for old_col, new_col in col_mapping.items():
-            if old_col in df.columns and new_col not in df.columns:
-                df[new_col] = df[old_col]
-        
-        # Garante que temos as colunas necessárias
-        required_cols = ['country', 'city', 'lat', 'lon']
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            st.error(f"CSV de cidades está faltando colunas: {missing_cols}")
-            return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
-        
-        # Converte coordenadas
-        df["lat"] = df["lat"].apply(_parse_number_loose)
-        df["lon"] = df["lon"].apply(_parse_number_loose)
-        df = df.dropna(subset=["lat", "lon"])
-        
-        return df[['country', 'city', 'lat', 'lon']]
-    except Exception as e:
-        st.error(f"Erro ao carregar cidades: {e}")
-        return pd.DataFrame(columns=['country', 'city', 'lat', 'lon'])
-
-def find_city_coordinates(country_name, city_name):
-    """Encontra coordenadas para uma cidade específica"""
-    cities_df = load_world_cities()
-    if cities_df.empty:
-        return None, None
-    
-    try:
-        match = cities_df[
-            (cities_df['country'].str.strip().str.lower() == country_name.strip().lower()) &
-            (cities_df['city'].str.strip().str.lower() == city_name.strip().lower())
-        ]
-        
-        if not match.empty:
-            return match.iloc[0]['lat'], match.iloc[0]['lon']
-    except Exception as e:
-        st.error(f"Error finding city coordinates: {e}")
-    
-    return None, None
-
-# Carregar dados de países e cidades
+# Carregar dados de países
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
-WORLD_CITIES = load_world_cities()
 
 # Garantir que COUNTRY_NAMES existe mesmo se houve erro no carregamento
 if not COUNTRY_CENTER_FULL:
@@ -296,7 +284,7 @@ else:
     COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 5) Header
+# 6) Header
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="border:1px solid #334155; background:#0b1220; border-radius:14px;
@@ -313,8 +301,12 @@ projects…</p>
 if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
+# Verificar se a API key está configurada
+if not get_geocoding_api_key():
+    st.sidebar.warning("⚠️ Geocoding API key not configured. City coordinates will not be available.")
+
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Carregamento de dados
+# 7) Carregamento de dados
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -369,7 +361,7 @@ def load_outputs_public():
         return pd.DataFrame(), False, f"Read error: {e}"
 
 if st.sidebar.button("🔄 Check updates"):
-    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear(); load_world_cities.clear()
+    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear()
     st.rerun()
 
 df_projects, okP, msgP = load_projects_public()
@@ -377,7 +369,7 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Mapa de OUTPUTS aprovados
+# 8) Mapa de OUTPUTS aprovados
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Projects & outputs map (approved outputs)")
 df_outputs_map, okOm, msgOm = load_outputs_public()
@@ -431,7 +423,7 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Tabela de outputs
+# 9) Tabela de outputs
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
@@ -541,7 +533,7 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO DE OUTPUT - VERSÃO COMPLETA COM CIDADES
+# 10) SUBMISSÃO DE OUTPUT - COM GEOCODING API
 # ──────────────────────────────────────────────────────────────────────────────
 
 st.markdown("---")
@@ -557,15 +549,22 @@ if "form_data" not in st.session_state:
 
 # Funções para gerenciar cidades
 def add_city(country, city_name):
-    """Adiciona uma cidade à lista"""
+    """Adiciona uma cidade à lista usando Geocoding API"""
     if country and country != SELECT_PLACEHOLDER and city_name.strip():
         for city in [x.strip() for x in city_name.split(",") if x.strip()]:
             pair = f"{country} — {city}"
             if pair not in st.session_state.form_data["cities"]:
+                # Usa Geocoding API para encontrar coordenadas
+                with st.spinner(f"🔍 Finding coordinates for {city}, {country}..."):
+                    lat, lon = find_city_coordinates(country, city)
+                
                 st.session_state.form_data["cities"].append(pair)
-                lat, lon = find_city_coordinates(country, city)
-                if lat and lon:
+                if lat is not None and lon is not None:
                     st.session_state.form_data["city_coords"][pair] = (lat, lon)
+                    st.success(f"✅ Found coordinates for {city}, {country}")
+                else:
+                    st.session_state.form_data["city_coords"][pair] = (None, None)
+                    st.warning(f"⚠️ Could not find coordinates for {city}, {country}")
         return True
     return False
 
@@ -699,7 +698,7 @@ with st.form("output_form", clear_on_submit=False):
                 if coords[0] and coords[1]:
                     st.write(f"📍 {city_pair} (Lat: {coords[0]:.4f}, Lon: {coords[1]:.4f})")
                 else:
-                    st.write(f"📍 {city_pair} (⚠️ coordinates not found)")
+                    st.write(f"📍 {city_pair} (❌ coordinates not found)")
             with col2:
                 remove_btn = st.form_submit_button("🗑️ Remove", key=f"remove_{i}")
                 if remove_btn:
@@ -710,27 +709,34 @@ with st.form("output_form", clear_on_submit=False):
     if st.session_state.form_data["cities"] and not is_global:
         st.write("**Map Preview:**")
         
-        # Encontrar centro do mapa
-        lats = [coords[0] for coords in st.session_state.form_data["city_coords"].values() if coords[0]]
-        lons = [coords[1] for coords in st.session_state.form_data["city_coords"].values() if coords[1]]
+        # Encontrar centro do mapa baseado nas cidades com coordenadas
+        cities_with_coords = [pair for pair in st.session_state.form_data["cities"] 
+                             if st.session_state.form_data["city_coords"].get(pair, (None, None))[0] is not None]
         
-        if lats and lons:
+        if cities_with_coords:
+            lats = [st.session_state.form_data["city_coords"][pair][0] for pair in cities_with_coords]
+            lons = [st.session_state.form_data["city_coords"][pair][1] for pair in cities_with_coords]
             center_lat = sum(lats) / len(lats)
             center_lon = sum(lons) / len(lons)
         else:
-            center_lat, center_lon = 0, 0
+            # Fallback para centro do primeiro país
+            available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
+            if available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
+                center_lat, center_lon = COUNTRY_CENTER_FULL[available_countries[0]]
+            else:
+                center_lat, center_lon = 0, 0
         
         m = folium.Map(location=[center_lat, center_lon], zoom_start=3, tiles="CartoDB positron")
         
         # Adicionar marcadores para cada cidade com coordenadas
-        for city_pair, coords in st.session_state.form_data["city_coords"].items():
-            if coords[0] and coords[1]:
-                folium.Marker(
-                    location=coords,
-                    popup=city_pair,
-                    tooltip=city_pair,
-                    icon=folium.Icon(color="green", icon="info-sign")
-                ).add_to(m)
+        for city_pair in cities_with_coords:
+            coords = st.session_state.form_data["city_coords"][city_pair]
+            folium.Marker(
+                location=coords,
+                popup=city_pair,
+                tooltip=city_pair,
+                icon=folium.Icon(color="green", icon="info-sign")
+            ).add_to(m)
         
         # Adicionar círculos para países selecionados
         for country in output_countries:
@@ -857,14 +863,16 @@ if submitted:
         available_countries = [c for c in output_countries if c not in ["Global", "Other: ______"]]
         
         if not is_global and available_countries and st.session_state.form_data["cities"]:
-            first_city = st.session_state.form_data["cities"][0]
-            coords = st.session_state.form_data["city_coords"].get(first_city, (None, None))
-            if coords[0] and coords[1]:
-                lat_o, lon_o = coords
-            elif available_countries:
-                first_country = available_countries[0]
-                if first_country in COUNTRY_CENTER_FULL:
-                    lat_o, lon_o = COUNTRY_CENTER_FULL[first_country]
+            # Tenta usar a primeira cidade com coordenadas
+            for city_pair in st.session_state.form_data["cities"]:
+                coords = st.session_state.form_data["city_coords"].get(city_pair, (None, None))
+                if coords[0] and coords[1]:
+                    lat_o, lon_o = coords
+                    break
+            
+            # Fallback para centro do primeiro país
+            if lat_o is None and available_countries and available_countries[0] in COUNTRY_CENTER_FULL:
+                lat_o, lon_o = COUNTRY_CENTER_FULL[available_countries[0]]
         
         # Preparar dados
         output_cities_str = ", ".join(st.session_state.form_data["cities"])
