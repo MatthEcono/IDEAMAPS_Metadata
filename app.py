@@ -12,6 +12,8 @@ from datetime import datetime
 from google.oauth2.service_account import Credentials
 import folium
 from streamlit_folium import st_folium
+import tempfile
+import os
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 0) PAGE CONFIG + LOGO
@@ -180,10 +182,9 @@ def _ulid_like():
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Países e Cidades (CSV local)
+# 4) Países e Cidades (Download automático do GitHub)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
-CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
 
 @st.cache_data(show_spinner=False)
 def load_country_centers():
@@ -199,10 +200,44 @@ def load_country_centers():
     return mapping, df
 
 @st.cache_data(show_spinner=False)
+def download_world_cities():
+    """Faz download do arquivo de cidades do GitHub"""
+    try:
+        # URL do arquivo raw no GitHub
+        url = "https://raw.githubusercontent.com/joelacus/world-cities/main/world_cities.csv"
+        
+        # Faz o download
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Salva em um arquivo temporário
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.csv', delete=False) as tmp_file:
+            tmp_file.write(response.content)
+            temp_path = tmp_file.name
+        
+        return temp_path
+    except Exception as e:
+        st.error(f"Erro ao baixar cidades: {e}")
+        return None
+
+@st.cache_data(show_spinner=False)
 def load_world_cities():
     """Carrega o arquivo de cidades do mundo com coordenadas"""
     try:
-        df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        # Tenta baixar o arquivo
+        temp_path = download_world_cities()
+        if not temp_path:
+            return pd.DataFrame()
+        
+        # Carrega o CSV
+        df = pd.read_csv(temp_path, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        
+        # Limpa o arquivo temporário
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+        
         # Normaliza nomes das colunas
         df.columns = [c.strip().lower() for c in df.columns]
         
@@ -532,7 +567,7 @@ _FORM_KEYS = {
     "years_selected",
     "output_desc","output_contact","output_linkedin","project_url_for_output",
     "country_for_city", "output_countries", "city_list_output",
-    "selected_city", "city_search"
+    "selected_city_newproj", "selected_city_output"
 }
 
 def _really_clear_output_form_state():
@@ -570,6 +605,12 @@ if "_clear_city_field_newproj" not in st.session_state:
 
 st.markdown("---")
 st.header("Submit Output (goes to review queue)")
+
+# Verifica se as cidades foram carregadas
+if WORLD_CITIES.empty:
+    st.warning("⚠️ City database is loading... Please wait a moment and refresh the page.")
+else:
+    st.success(f"✅ City database loaded with {len(WORLD_CITIES)} cities")
 
 with st.form("OUTPUT_FORM", clear_on_submit=False):
     submitter_email = st.text_input(
@@ -610,7 +651,10 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             city_options = [SELECT_PLACEHOLDER]
             if selected_country_city and selected_country_city != SELECT_PLACEHOLDER:
                 cities_data = get_cities_by_country(selected_country_city)
-                city_options.extend([city['city'] for city in cities_data])
+                if cities_data:
+                    city_options.extend([city['city'] for city in cities_data])
+                else:
+                    st.info(f"No cities found for {selected_country_city}")
             
             selected_city_newproj = st.selectbox(
                 "Select city",
@@ -629,6 +673,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                         lat, lon = find_city_coordinates(selected_country_city, selected_city_newproj)
                         if lat and lon:
                             st.session_state.city_coordinates[pair] = (lat, lon)
+                            st.success(f"📍 Coordinates found: {lat:.4f}, {lon:.4f}")
+                        else:
+                            st.warning("⚠️ City coordinates not found - using country center")
                     st.rerun()
                 else:
                     st.warning("Select a valid country and city.")
@@ -642,7 +689,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     if coords[0] and coords[1]:
                         st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
                     else:
-                        st.write(f"- {it}")
+                        st.write(f"- {it} (⚠️ no coordinates)")
                 with c2:
                     if st.form_submit_button("Remove", key=f"rm_city_newproj_{i}"):
                         st.session_state.city_list_output.pop(i)
@@ -709,7 +756,10 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         city_options_output = [SELECT_PLACEHOLDER]
         if country_for_city and country_for_city != SELECT_PLACEHOLDER:
             cities_data = get_cities_by_country(country_for_city)
-            city_options_output.extend([city['city'] for city in cities_data])
+            if cities_data:
+                city_options_output.extend([city['city'] for city in cities_data])
+            else:
+                st.info(f"No cities found for {country_for_city}")
         
         selected_city_output = st.selectbox(
             "Select city",
@@ -729,6 +779,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     lat, lon = find_city_coordinates(country_for_city, selected_city_output)
                     if lat and lon:
                         st.session_state.city_coordinates[pair] = (lat, lon)
+                        st.success(f"📍 Coordinates found: {lat:.4f}, {lon:.4f}")
+                    else:
+                        st.warning("⚠️ City coordinates not found - using country center")
                 st.rerun()
             elif is_global:
                 st.warning("Cannot add cities for global coverage")
@@ -744,7 +797,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 if coords[0] and coords[1]:
                     st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
                 else:
-                    st.write(f"- {it}")
+                    st.write(f"- {it} (⚠️ no coordinates)")
             with c2:
                 if st.form_submit_button("Remove", key=f"rm_city_out_{i}"):
                     st.session_state.city_list_output.pop(i)
