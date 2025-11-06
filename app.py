@@ -552,6 +552,9 @@ else:
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
+# app.py (apenas a seção 9 - SUBMISSÃO DE OUTPUT com as correções)
+# ... (código anterior permanece igual)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO DE OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
@@ -700,8 +703,10 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
         new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
 
+    # CORREÇÃO: Output Type com Data Type travado quando não é Dataset
     output_type_sel = st.selectbox("Output Type", options=OUTPUT_TYPES, key="output_type_sel")
     
+    # CORREÇÃO: Data Type só aparece e é habilitado quando Output Type = Dataset
     output_data_type = ""
     if output_type_sel == "Dataset":
         output_data_type = st.selectbox(
@@ -710,6 +715,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             key="output_data_type"
         )
     else:
+        # Quando não é Dataset, o campo fica vazio e não é exibido
         output_data_type = ""
 
     output_type_other = ""
@@ -731,7 +737,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     is_global = "Global" in output_countries
     if is_global:
         st.info("Global coverage selected - city fields will be disabled")
-        # Não limpa automaticamente outros países - permite que o usuário decida
 
     output_country_other = ""
     if "Other: ______" in output_countries:
@@ -747,7 +752,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     
     colx1, colx2, colx3 = st.columns([2,2,1])
     with colx1:
-        # CORREÇÃO: Campo NUNCA travado, exceto quando é Global
+        # CORREÇÃO: Campo SEMPRE habilitado quando não é Global
         country_for_city = st.selectbox(
             "Country for the city",
             options=[SELECT_PLACEHOLDER] + available_countries_for_cities,
@@ -879,11 +884,13 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             st.warning("Please provide the Output Name."); st.stop()
         if not output_countries:
             st.warning("Please select at least one country for geographic coverage."); st.stop()
+        # CORREÇÃO: Validação do Data Type apenas quando for Dataset
         if output_type_sel == "Dataset" and (not output_data_type or output_data_type == SELECT_PLACEHOLDER):
             st.warning("Please select a Data type for Dataset outputs."); st.stop()
         if is_other_project and not (st.session_state.get("city_list_output") or st.session_state.get("new_project_countries")):
             st.warning("For a new project (Other), please add at least one country/city."); st.stop()
 
+        # CORREÇÃO: Garante que Data Type fica vazio se não for Dataset
         if output_type_sel != "Dataset":
             output_data_type = ""
 
