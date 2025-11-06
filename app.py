@@ -342,20 +342,20 @@ else:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8) Tabela de outputs (prévia + coluna [See full information] por linha)
-#     - seleção exclusiva (1 linha por vez)
-#     - após fechar o pop-up, todas as checkboxes voltam desmarcadas
+#     - seleção exclusiva
+#     - desmarca imediatamente ao abrir o pop-up (ou ao fechar)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
 
 # Estado auxiliar
-if "_selected_output_idx" not in st.session_state:
-    st.session_state._selected_output_idx = None
-if "_open_details_flag" not in st.session_state:
-    st.session_state._open_details_flag = False
-# Versão do editor para forçar remontagem (e assim limpar checkboxes)
-if "_outputs_editor_key_version" not in st.session_state:
-    st.session_state._outputs_editor_key_version = 0
+ss = st.session_state
+if "_selected_output_idx" not in ss:
+    ss._selected_output_idx = None
+if "_want_open_dialog" not in ss:
+    ss._want_open_dialog = False           # sinaliza que, após o rerun, devemos abrir o modal
+if "_outputs_editor_key_version" not in ss:
+    ss._outputs_editor_key_version = 0     # força remontagem do editor (limpa checkboxes)
 
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
@@ -377,8 +377,8 @@ else:
         details_col = "See full information"
         df_preview[details_col] = False
 
-        # Chave única por versão para resetar seleção após o pop-up
-        editor_key = f"outputs_editor_{st.session_state._outputs_editor_key_version}"
+        # Key com versão para limpar seleção
+        editor_key = f"outputs_editor_{ss._outputs_editor_key_version}"
 
         edited = st.data_editor(
             df_preview,
@@ -399,22 +399,19 @@ else:
             }
         )
 
-        # Descobre qual linha foi marcada (pega a primeira marcada)
+        # Descobre qual linha foi marcada (primeira marcada)
         selected_idx_list = []
         if details_col in edited.columns:
             selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
 
-        if selected_idx_list:
-            # Seleção exclusiva: toma apenas a primeira marcada
-            idx = int(selected_idx_list[0])
-            # Salva seleção e sinaliza abertura
-            st.session_state._selected_output_idx = idx
-            st.session_state._open_details_flag = True
-            # Aumenta a versão do editor AGORA para que, na próxima renderização
-            # (após fechar o modal), o data_editor remonte sem nenhum checkbox marcado
-            st.session_state._outputs_editor_key_version += 1
+        # Se houve clique: salva índice, marca intenção de abrir, incrementa versão e rerun
+        if selected_idx_list and not ss._want_open_dialog:
+            ss._selected_output_idx = int(selected_idx_list[0])  # seleção exclusiva
+            ss._want_open_dialog = True
+            ss._outputs_editor_key_version += 1  # força limpar checkboxes no próximo render
+            st.rerun()
 
-        # Renderiza os detalhes SEMPRE completos
+        # Função para renderizar detalhes SEMPRE completos
         def _render_full_info_md(row):
             show_cols = [
                 ("project","Project"),
@@ -438,7 +435,7 @@ else:
                 lines.append(f"- **{nice}:** {val if val else '—'}")
             st.markdown("\n".join(lines))
 
-        # Tenta abrir em modal; se indisponível, abre inline
+        # Abre o pop-up após o rerun, com a tabela já limpa
         def _open_details(row):
             try:
                 @st.dialog("Full information")
@@ -446,29 +443,27 @@ else:
                     _render_full_info_md(rdict)
                 _dialog(row.to_dict())
             except Exception:
+                # Fallback inline se st.dialog não existir
                 with st.container(border=True):
                     st.markdown("### Full information")
                     _render_full_info_md(row)
                     st.button(
                         "Close",
                         key=f"close_inline_details_{_ulid_like()}",
-                        on_click=lambda: st.session_state.update(
-                            {"_open_details_flag": False, "_selected_output_idx": None}
+                        on_click=lambda: ss.update(
+                            {"_want_open_dialog": False, "_selected_output_idx": None}
                         )
                     )
 
-        # Abre somente a linha selecionada (se válida)
-        if st.session_state._open_details_flag:
-            idx = st.session_state._selected_output_idx
+        # Se devemos abrir (após a seleção e rerun), abre e desarma o flag
+        if ss._want_open_dialog:
+            idx = ss._selected_output_idx
             if isinstance(idx, int) and (0 <= idx < len(df_base)):
                 row = df_base.iloc[idx]
                 _open_details(row)
-
-            # Limpa flags para não reabrir no próximo rerun
-            st.session_state._open_details_flag = False
-            st.session_state._selected_output_idx = None
-
-
+            # desarma para não reabrir em novos reruns (fechou no X = ok)
+            ss._want_open_dialog = False
+            ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 9) SUBMISSÃO: somente OUTPUT (com flags estáveis + grava lat/lon + limpeza)
