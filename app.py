@@ -346,7 +346,7 @@ else:
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
 
-# estado auxiliar para lembrar qual linha foi selecionada
+# Estado auxiliar
 if "_selected_output_idx" not in st.session_state:
     st.session_state._selected_output_idx = None
 if "_open_details_flag" not in st.session_state:
@@ -359,23 +359,26 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
-        # Colunas de preview + coluna booleana para abrir detalhes
+        # Trabalhamos sempre com RangeIndex estável
+        df_base = df_outputs.reset_index(drop=True).copy()
+
         preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
         for c in preview_cols:
-            if c not in df_outputs.columns:
-                df_outputs[c] = ""
+            if c not in df_base.columns:
+                df_base[c] = ""
 
-        # dataframe para o editor (não alteramos o df original)
-        df_preview = df_outputs[preview_cols].copy()
+        # dataframe de preview + coluna de ação
+        df_preview = df_base[preview_cols].copy()
         details_col = "See full information"
-        df_preview[details_col] = False  # coluna de ação
+        df_preview[details_col] = False
 
-        # Mostra editor: colunas de preview desabilitadas; só a coluna de ação editável
+        # Editor com apenas a coluna de ação editável
         edited = st.data_editor(
             df_preview,
+            key="outputs_editor",
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols,  # impede edição dessas colunas
+            disabled=preview_cols,  # evita edição nas colunas de preview
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
@@ -389,15 +392,21 @@ else:
             }
         )
 
-        # se o usuário marcou alguma linha, escolhemos a primeira marcada
-        if details_col in edited.columns and edited[details_col].any():
-            first_idx = int(edited.index[edited[details_col]].tolist()[0])
-            st.session_state._selected_output_idx = first_idx
-            st.session_state._open_details_flag = True
-            # limpa a marcação para não ficar persistente no próximo render
-            edited.loc[first_idx, details_col] = False
+        # Descobre qual linha foi marcada (pega a primeira marcada)
+        selected_idx_list = []
+        if details_col in edited.columns:
+            # como o índice é RangeIndex, podemos usar enumerate de forma segura
+            selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
 
-        # função que renderiza os detalhes como markdown
+        if selected_idx_list:
+            idx = int(selected_idx_list[0])
+            # Guarda seleção e sinaliza para abrir
+            st.session_state._selected_output_idx = idx
+            st.session_state._open_details_flag = True
+            # “Desmarca” visualmente para a próxima renderização
+            edited.at[idx, details_col] = False
+
+        # Função para renderizar detalhes SEMPRE completos
         def _render_full_info_md(row):
             show_cols = [
                 ("project","Project"),
@@ -421,7 +430,7 @@ else:
                 lines.append(f"- **{nice}:** {val if val else '—'}")
             st.markdown("\n".join(lines))
 
-        # tenta abrir em modal (Streamlit 1.31+); senão, abre painel inline
+        # Tenta abrir em popup (st.dialog); cai para inline se não houver
         def _open_details(row):
             try:
                 @st.dialog("Full information")
@@ -432,17 +441,23 @@ else:
                 with st.container(border=True):
                     st.markdown("### Full information")
                     _render_full_info_md(row)
-                    st.button("Close", key="close_inline_details",
-                              on_click=lambda: st.session_state.update(
-                                  {"_open_details_flag": False, "_selected_output_idx": None}
-                              ))
+                    st.button(
+                        "Close",
+                        key=f"close_inline_details_{_ulid_like()}",
+                        on_click=lambda: st.session_state.update(
+                            {"_open_details_flag": False, "_selected_output_idx": None}
+                        )
+                    )
 
-        # se houve clique, mostra detalhes apenas da linha selecionada
-        if st.session_state._open_details_flag and st.session_state._selected_output_idx is not None:
-            row = df_outputs.reset_index(drop=True).iloc[st.session_state._selected_output_idx]
-            _open_details(row)
-            # após abrir, limpa o flag (o modal fecha com X; no inline temos botão Close)
+        # Abre detalhes apenas se o índice for válido
+        if st.session_state._open_details_flag:
+            idx = st.session_state._selected_output_idx
+            if isinstance(idx, int) and (0 <= idx < len(df_base)):
+                row = df_base.iloc[idx]
+                _open_details(row)
+            # Reseta flags em qualquer caso para evitar índices “fantasmas”
             st.session_state._open_details_flag = False
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
