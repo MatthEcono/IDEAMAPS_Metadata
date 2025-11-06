@@ -439,7 +439,7 @@ else:
 
         df_preview[details_col] = False
         df_preview[ACTION_COL] = "—"
-        df_preview[REASON_COL] = ""  # será preenchido pelo popup
+        df_preview[REASON_COL] = ""
 
         editor_key = f"outputs_editor_{ss._outputs_editor_key_version}"
         edited = st.data_editor(
@@ -530,8 +530,8 @@ else:
             ss._reason_tmp = ""
 
         def _prepopulate_submission_from_row(row_dict: dict, reason: str, sheet_row: int):
-            """Pré-preenche submissão e ativa modo edição."""
-            ss[wkey("submitter_email")] = ""  # quem edita deve preencher seu email
+            """Pré-preenche a submissão e ativa modo edição (sem st.rerun aqui)."""
+            ss[wkey("submitter_email")] = ""  # quem edita deve informar o seu e-mail
 
             proj_name = (row_dict.get("project") or "").strip()
             ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
@@ -540,16 +540,18 @@ else:
 
             ss[wkey("output_type_sel")] = (row_dict.get("output_type") or "")
             if not ss[wkey("output_type_sel")]:
-                ss[wkey("output_type_sel")] = "Other: ________" if (row_dict.get("output_type_other") or "") else OUTPUT_TYPES[0]
+                ss[wkey("output_type_sel")] = (
+                    "Other: ________" if (row_dict.get("output_type_other") or "") else OUTPUT_TYPES[0]
+                )
             ss[wkey("output_type_other")] = (row_dict.get("output_type_other") or "")
 
             if ss[wkey("output_type_sel")] == "Dataset":
                 ss[wkey("output_data_type")] = (row_dict.get("output_data_type") or SELECT_PLACEHOLDER)
 
             ss[wkey("output_title")] = (row_dict.get("output_title") or "")
-            ss[wkey("output_url")] = (row_dict.get("output_url") or "")
+            ss[wkey("output_url")]   = (row_dict.get("output_url") or "")
 
-            # Países
+            # países
             countries = []
             oc = (row_dict.get("output_country") or "").strip()
             if oc:
@@ -557,7 +559,7 @@ else:
                 countries = parts if len(parts) > 1 else [oc]
             ss[wkey("output_countries")] = countries
 
-            # Cidades (mantém "País — Cidade" quando existir)
+            # cidades
             ss.form_data["cities"] = []
             ocity = (row_dict.get("output_city") or "").strip()
             if ocity:
@@ -567,10 +569,7 @@ else:
                         ss.form_data["cities"].append(p)
                     else:
                         base_country = countries[0] if countries else ""
-                        if base_country:
-                            ss.form_data["cities"].append(f"{base_country} — {p}")
-                        else:
-                            ss.form_data["cities"].append(p)
+                        ss.form_data["cities"].append(f"{base_country} — {p}" if base_country else p)
 
             years_txt = (row_dict.get("output_year") or "").strip()
             years = []
@@ -581,17 +580,15 @@ else:
                         years.append(int(y))
             ss[wkey("years_selected")] = years
 
-            ss[wkey("output_desc")] = (row_dict.get("output_desc") or "")
-            ss[wkey("output_contact")] = (row_dict.get("output_contact") or "")
-            ss[wkey("output_linkedin")] = (row_dict.get("output_linkedin") or "")
+            ss[wkey("output_desc")]            = (row_dict.get("output_desc") or "")
+            ss[wkey("output_contact")]         = (row_dict.get("output_contact") or "")
+            ss[wkey("output_linkedin")]        = (row_dict.get("output_linkedin") or "")
             ss[wkey("project_url_for_output")] = (row_dict.get("project_url") or "")
 
-            ss["_edit_mode"] = True
-            ss["_edit_reason"] = reason
+            # flags de edição
+            ss["_edit_mode"]       = True
+            ss["_edit_reason"]     = reason
             ss["_edit_target_row"] = int(sheet_row) if sheet_row else None
-
-            st.info("Edit mode: the submission form below was pre-filled. Complete your email and click Submit for Review.")
-            st.rerun()
 
         def _show_action_dialog(df_base_local):
             if not ss.get("_action_dialog"):
@@ -661,8 +658,14 @@ else:
                                 else:
                                     st.error(f"⚠️ Error creating removal request: {msgRm}")
                             else:
+                                # EDIT: pré-popula, fecha modal e só então rerun
                                 _prepopulate_submission_from_row(base_row, ss._reason_tmp, sheet_row)
                                 _close_action_dialog()
+                                ss._pending_action = None
+                                ss._pending_row_idx = None
+                                ss._pending_sheet_row = None
+                                ss._outputs_editor_key_version += 1
+                                st.rerun()
                         st.button("OK", type="primary", use_container_width=True, on_click=_confirm)
                 _dlg()
             except Exception:
@@ -1101,3 +1104,4 @@ with col1:
     st.button("✅ Submit for Review", use_container_width=True, type="primary", on_click=_cb_submit, key=wkey("btn_submit"))
 with col2:
     st.button("🗑️ Clear Form", use_container_width=True, type="secondary", on_click=_cb_clear, key=wkey("btn_clear"))
+
