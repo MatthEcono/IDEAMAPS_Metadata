@@ -1,8 +1,8 @@
+
 # app.py
 import base64
 from pathlib import Path
 from typing import Optional, List, Tuple
-
 import gspread
 import pandas as pd
 import re
@@ -58,7 +58,6 @@ PROJECTS_HEADERS = [
     "approved","created_at"
 ]
 
-# outputs têm lat/lon e output_linkedin
 OUTPUTS_HEADERS = [
     "project",
     "output_title",
@@ -70,13 +69,13 @@ OUTPUTS_HEADERS = [
     "output_year",
     "output_desc",
     "output_contact",
-    "output_email",        # legado (mantemos vazio)
-    "output_linkedin",     # novo
+    "output_email",
+    "output_linkedin",
     "project_url",
     "submitter_email",
     "is_edit","edit_target","edit_request",
     "approved","created_at",
-    "lat","lon"            # coords p/ mapear (centro do país)
+    "lat","lon"
 ]
 
 PROJECT_TAXONOMY = [
@@ -129,7 +128,6 @@ def _open_or_create(ws_name: str, headers: Optional[List[str]] = None):
             ws.update("A1", [headers])
     except Exception as e:
         return None, f"Worksheet error: {e}"
-    # garante headers
     try:
         current = ws.row_values(1) or []
         missing = [h for h in (headers or []) if h not in current]
@@ -183,9 +181,10 @@ def _ulid_like():
     return datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4) Países (CSV local)
+# 4) Países e Cidades (CSV local)
 # ──────────────────────────────────────────────────────────────────────────────
 COUNTRY_CSV_PATH = APP_DIR / "country-coord.csv"
+CITIES_CSV_PATH = APP_DIR / "world_cities.csv"
 
 @st.cache_data(show_spinner=False)
 def load_country_centers():
@@ -200,7 +199,80 @@ def load_country_centers():
     mapping = {row[c_country]: (float(row["lat"]), float(row["lon"])) for _, row in df.iterrows()}
     return mapping, df
 
+@st.cache_data(show_spinner=False)
+def load_world_cities():
+    """Carrega o arquivo de cidades do mundo com coordenadas"""
+    try:
+        df = pd.read_csv(CITIES_CSV_PATH, dtype=str, encoding="utf-8", on_bad_lines="skip")
+        # Normaliza nomes das colunas
+        df.columns = [c.strip().lower() for c in df.columns]
+        
+        # Mapeia possíveis nomes de colunas
+        col_mapping = {
+            'name': 'city',
+            'country_name': 'country', 
+            'lat': 'lat',
+            'lng': 'lon',
+            'latitude': 'lat',
+            'longitude': 'lon'
+        }
+        
+        # Renomeia colunas para padrão
+        for old_col, new_col in col_mapping.items():
+            if old_col in df.columns and new_col not in df.columns:
+                df[new_col] = df[old_col]
+        
+        # Garante que temos as colunas necessárias
+        required_cols = ['country', 'city', 'lat', 'lon']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"CSV de cidades está faltando colunas: {missing_cols}")
+            return pd.DataFrame()
+        
+        # Converte coordenadas
+        df["lat"] = df["lat"].apply(_parse_number_loose)
+        df["lon"] = df["lon"].apply(_parse_number_loose)
+        df = df.dropna(subset=["lat", "lon"])
+        
+        return df[['country', 'city', 'lat', 'lon']]
+    except Exception as e:
+        st.error(f"Erro ao carregar cidades: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(show_spinner=False)
+def get_cities_by_country(country_name):
+    """Retorna lista de cidades para um país específico"""
+    cities_df = load_world_cities()
+    if cities_df.empty:
+        return []
+    
+    # Filtra cidades pelo país
+    country_cities = cities_df[cities_df['country'].str.strip().str.lower() == country_name.strip().lower()]
+    
+    # Remove duplicatas e ordena
+    unique_cities = country_cities[['city', 'lat', 'lon']].drop_duplicates(subset=['city'])
+    unique_cities = unique_cities.sort_values('city')
+    
+    return unique_cities.to_dict('records')
+
+def find_city_coordinates(country_name, city_name):
+    """Encontra coordenadas para uma cidade específica"""
+    cities_df = load_world_cities()
+    if cities_df.empty:
+        return None, None
+    
+    match = cities_df[
+        (cities_df['country'].str.strip().str.lower() == country_name.strip().lower()) &
+        (cities_df['city'].str.strip().str.lower() == city_name.strip().lower())
+    ]
+    
+    if not match.empty:
+        return match.iloc[0]['lat'], match.iloc[0]['lon']
+    
+    return None, None
+
 COUNTRY_CENTER_FULL, _df_countries = load_country_centers()
+WORLD_CITIES = load_world_cities()
 COUNTRY_NAMES = sorted(COUNTRY_CENTER_FULL.keys())
 
 def _countries_with_global_first(names: List[str]):
@@ -225,7 +297,7 @@ if _logo_img is not None:
     st.sidebar.image(_logo_img, caption="IDEAMAPS", use_container_width=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6) Carregamento (projects só para eventual pré-população; outputs exibidos)
+# 6) Carregamento de dados
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_projects_public():
@@ -254,17 +326,14 @@ def load_outputs_public():
         df = pd.DataFrame(ws.get_all_records())
         if df.empty:
             return df, True, None
-        # garante headers
         for c in OUTPUTS_HEADERS:
             if c not in df.columns:
                 df[c] = ""
-        # normaliza aprovado
         df["approved"] = df["approved"].astype(str).str.upper().isin(["TRUE","1","YES"])
         df = df[df["approved"]].copy()
-        # tipa coords
         df["lat"] = df["lat"].apply(_as_float)
         df["lon"] = df["lon"].apply(_as_float)
-        # fallback: se não houver lat/lon, tenta do país
+        
         def _fallback_coords(row):
             if pd.notna(row.get("lat")) and pd.notna(row.get("lon")):
                 return row["lat"], row["lon"]
@@ -272,6 +341,7 @@ def load_outputs_public():
             if ctry in COUNTRY_CENTER_FULL:
                 return COUNTRY_CENTER_FULL[ctry]
             return None, None
+        
         lats, lons = [], []
         for _, r in df.iterrows():
             la, lo = _fallback_coords(r)
@@ -282,7 +352,7 @@ def load_outputs_public():
         return pd.DataFrame(), False, f"Read error: {e}"
 
 if st.sidebar.button("🔄 Check updates"):
-    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear()
+    load_projects_public.clear(); load_outputs_public.clear(); load_country_centers.clear(); load_world_cities.clear()
     st.rerun()
 
 df_projects, okP, msgP = load_projects_public()
@@ -290,7 +360,7 @@ if not okP and msgP:
     st.caption(f"⚠️ {msgP}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7) Mapa (APENAS de OUTPUTS aprovados, usando lat/lon salvos no sheet)
+# 7) Mapa de OUTPUTS aprovados
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Projects & outputs map (approved outputs)")
 df_outputs_map, okOm, msgOm = load_outputs_public()
@@ -306,7 +376,6 @@ else:
         )
         groups = dfc.groupby(["output_country","lat","lon"], as_index=False)
         for (country, lat, lon), g in groups:
-            # agregação: lista de projetos e outputs
             proj_info = {}
             for _, r in g.iterrows():
                 proj = (str(r.get("project","")).strip() or "(unnamed)")
@@ -314,7 +383,6 @@ else:
                 out_url = _clean_url(r.get("output_url",""))
                 proj_info.setdefault(proj, [])
                 proj_info[proj].append((out_title, out_url))
-            # tooltip/popup
             lines = ["<div style='font-size:0.9rem; color:#0f172a;'>",
                      f"<b>{country if country else '—'}</b>",
                      "<ul style='padding-left:1rem; margin:0;'>"]
@@ -341,12 +409,11 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Tabela de outputs (prévia + coluna [See full information] por linha)
+# 8) Tabela de outputs
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
 
-# Estado auxiliar
 ss = st.session_state
 if "_selected_output_idx" not in ss:
     ss._selected_output_idx = None
@@ -362,22 +429,17 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
-        # Índice estável
         df_base = df_outputs.reset_index(drop=True).copy()
-
         preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
         for c in preview_cols:
             if c not in df_base.columns:
                 df_base[c] = ""
 
-        # Dataframe de preview + coluna de ação
         df_preview = df_base[preview_cols].copy()
         details_col = "See full information"
         df_preview[details_col] = False
 
-        # Key com versão para limpar seleção
         editor_key = f"outputs_editor_{ss._outputs_editor_key_version}"
-
         edited = st.data_editor(
             df_preview,
             key=editor_key,
@@ -397,12 +459,10 @@ else:
             }
         )
 
-        # Descobre qual linha foi marcada
         selected_idx_list = []
         if details_col in edited.columns:
             selected_idx_list = [i for i, v in enumerate(edited[details_col].tolist()) if bool(v)]
 
-        # Se houve clique: salva índice, marca intenção de abrir, incrementa versão e rerun
         if selected_idx_list and not ss._want_open_dialog:
             ss._selected_output_idx = int(selected_idx_list[0])
             ss._want_open_dialog = True
@@ -459,10 +519,9 @@ else:
             ss._selected_output_idx = None
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9) SUBMISSÃO: somente OUTPUT
+# 9) SUBMISSÃO DE OUTPUT
 # ──────────────────────────────────────────────────────────────────────────────
 
-# --- helpers de reset ---
 _FORM_KEYS = {
     "submitter_email","project_tax_sel","project_tax_other",
     "new_project_url","new_project_contact","new_project_countries",
@@ -473,32 +532,34 @@ _FORM_KEYS = {
     "output_city_dummy",
     "years_selected",
     "output_desc","output_contact","output_linkedin","project_url_for_output",
-    "country_for_city", "output_countries", "city_list_output"
+    "country_for_city", "output_countries", "city_list_output",
+    "selected_city", "city_search"
 }
 
 def _really_clear_output_form_state():
-    """Apaga as chaves do formulário do session_state (modo seguro)."""
     for k in list(_FORM_KEYS):
         st.session_state.pop(k, None)
     st.session_state.pop("map_center", None)
     st.session_state["map_zoom"] = 2
     st.session_state["_clear_city_field_out"] = False
     st.session_state["_clear_city_field_newproj"] = False
+    if "city_coordinates" in st.session_state:
+        st.session_state.city_coordinates = {}
 
-# Flag de reset pendente
 if "_pending_form_reset" not in st.session_state:
     st.session_state._pending_form_reset = False
 
-# ⚠️ Faça o reset antes de inicializar qualquer estado
 if st.session_state._pending_form_reset:
     _really_clear_output_form_state()
     st.session_state._pending_form_reset = False
 
-# ===== STATE INIT =====
+# Estado inicial
 if "output_countries" not in st.session_state:
     st.session_state.output_countries = []
 if "city_list_output" not in st.session_state:
     st.session_state.city_list_output = []
+if "city_coordinates" not in st.session_state:
+    st.session_state.city_coordinates = {}
 if "map_center" not in st.session_state:
     st.session_state.map_center = None
 if "map_zoom" not in st.session_state:
@@ -518,7 +579,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         placeholder="name@org.org"
     )
 
-    # Projeto (taxonomia)
     project_tax_sel = st.selectbox(
         "Project Name (taxonomy)",
         options=PROJECT_TAXONOMY,
@@ -529,7 +589,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     if is_other_project:
         project_tax_other = st.text_input("Please specify the project (taxonomy)", key="project_tax_other")
 
-    # Novo projeto (se Other)
     new_project_url = ""
     new_project_contact = ""
     if is_other_project:
@@ -548,44 +607,55 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 key="selected_country_city"
             )
         with colc2:
-            if st.session_state._clear_city_field_newproj and "city_add_proj" in st.session_state:
-                del st.session_state["city_add_proj"]
-                st.session_state._clear_city_field_newproj = False
-            city_input_proj = st.text_input(
-                "City (accepts multiple, separated by commas)",
-                key="city_add_proj"
+            # AUTOBUSCA DE CIDADES PARA NOVO PROJETO
+            city_options = [SELECT_PLACEHOLDER]
+            if selected_country_city and selected_country_city != SELECT_PLACEHOLDER:
+                cities_data = get_cities_by_country(selected_country_city)
+                city_options.extend([city['city'] for city in cities_data])
+            
+            selected_city_newproj = st.selectbox(
+                "Select city",
+                options=city_options,
+                key="selected_city_newproj"
             )
         with colc3:
             st.write("")
             if st.form_submit_button("➕ Add city to NEW project"):
-                if selected_country_city and selected_country_city != SELECT_PLACEHOLDER and city_input_proj.strip():
-                    for c in [x.strip() for x in city_input_proj.split(",") if x.strip()]:
-                        pair = f"{selected_country_city} — {c}"
-                        if pair not in st.session_state.city_list_output:
-                            st.session_state.city_list_output.append(pair)
-                    st.session_state._clear_city_field_newproj = True
+                if (selected_country_city and selected_country_city != SELECT_PLACEHOLDER and 
+                    selected_city_newproj and selected_city_newproj != SELECT_PLACEHOLDER):
+                    pair = f"{selected_country_city} — {selected_city_newproj}"
+                    if pair not in st.session_state.city_list_output:
+                        st.session_state.city_list_output.append(pair)
+                        # Salva coordenadas da cidade
+                        lat, lon = find_city_coordinates(selected_country_city, selected_city_newproj)
+                        if lat and lon:
+                            st.session_state.city_coordinates[pair] = (lat, lon)
                     st.rerun()
                 else:
-                    st.warning("Select a valid country and type a city.")
+                    st.warning("Select a valid country and city.")
 
         if st.session_state.get("city_list_output"):
             st.caption("Cities added to NEW project:")
             for i, it in enumerate(st.session_state.city_list_output):
                 c1, c2 = st.columns([6,1])
-                with c1: st.write(f"- {it}")
+                with c1: 
+                    coords = st.session_state.city_coordinates.get(it, (None, None))
+                    if coords[0] and coords[1]:
+                        st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
+                    else:
+                        st.write(f"- {it}")
                 with c2:
                     if st.form_submit_button("Remove", key=f"rm_city_newproj_{i}"):
-                        st.session_state.city_list_output.pop(i); st.rerun()
-        if st.checkbox("Clear all cities", key="_clear_cities_flag"):
-            st.session_state.city_list_output = []
+                        st.session_state.city_list_output.pop(i)
+                        if it in st.session_state.city_coordinates:
+                            del st.session_state.city_coordinates[it]
+                        st.rerun()
 
         new_project_url = st.text_input("Project URL (optional)", key="new_project_url")
         new_project_contact = st.text_input("Project contact / institution (optional)", key="new_project_contact")
 
-    # CORREÇÃO: Output Type com lógica condicional para Data Type
     output_type_sel = st.selectbox("Output Type", options=OUTPUT_TYPES, key="output_type_sel")
     
-    # Data Type só aparece e é obrigatório se Output Type for Dataset
     output_data_type = ""
     if output_type_sel == "Dataset":
         output_data_type = st.selectbox(
@@ -594,7 +664,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             key="output_data_type"
         )
     else:
-        # Se não for Dataset, garante que o campo fica vazio no sheet
         output_data_type = ""
 
     output_type_other = ""
@@ -604,7 +673,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     output_title = st.text_input("Output Name *", key="output_title")
     output_url   = st.text_input("Output URL (optional)", key="output_url")
 
-    # CORREÇÃO: Países de cobertura como multiselect
     st.markdown("**Geographic coverage of output**")
     countries_fixed = _countries_with_global_first(COUNTRY_NAMES) + ["Other: ______"]
     output_countries = st.multiselect(
@@ -613,11 +681,9 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         key="output_countries"
     )
     
-    # Lógica para Global vs países específicos
     is_global = "Global" in output_countries
     if is_global:
         st.info("Global coverage selected - city fields will be disabled")
-        # Limpa outros países se Global for selecionado
         if len(output_countries) > 1:
             st.session_state.output_countries = ["Global"]
             st.rerun()
@@ -626,10 +692,8 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     if "Other: ______" in output_countries:
         output_country_other = st.text_input("Please specify other geographic coverage", key="output_country_other")
 
-    # Cities covered (OUTPUT) - só habilitado se não for Global
+    # AUTOBUSCA DE CIDADES PARA OUTPUT
     st.markdown("**Cities covered**")
-    
-    # Prepara países disponíveis para seleção de cidades (exclui Global e Other)
     available_countries_for_cities = [c for c in output_countries if c not in ["Global", "Other: ______"]]
     
     colx1, colx2, colx3 = st.columns([2,2,1])
@@ -642,44 +706,56 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             disabled=is_global or not available_countries_for_cities
         )
     with colx2:
-        if st.session_state._clear_city_field_out and "output_city_dummy" in st.session_state:
-            del st.session_state["output_city_dummy"]
-            st.session_state._clear_city_field_out = False
-        city_input_out = st.text_input(
-            "City (accepts multiple, separated by commas)",
-            key="output_city_dummy",
+        # Carrega cidades do país selecionado
+        city_options_output = [SELECT_PLACEHOLDER]
+        if country_for_city and country_for_city != SELECT_PLACEHOLDER:
+            cities_data = get_cities_by_country(country_for_city)
+            city_options_output.extend([city['city'] for city in cities_data])
+        
+        selected_city_output = st.selectbox(
+            "Select city",
+            options=city_options_output,
+            key="selected_city_output",
             disabled=is_global
         )
     with colx3:
         st.write("")
-        add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not city_input_out.strip()
+        add_city_disabled = is_global or not country_for_city or country_for_city == SELECT_PLACEHOLDER or not selected_city_output or selected_city_output == SELECT_PLACEHOLDER
         if st.form_submit_button("➕ Add city to OUTPUT", disabled=add_city_disabled):
-            if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and city_input_out.strip():
-                for c in [x.strip() for x in city_input_out.split(",") if x.strip()]:
-                    pair = f"{country_for_city} — {c}"
-                    if pair not in st.session_state.city_list_output:
-                        st.session_state.city_list_output.append(pair)
-                st.session_state._clear_city_field_out = True
+            if not is_global and country_for_city and country_for_city != SELECT_PLACEHOLDER and selected_city_output and selected_city_output != SELECT_PLACEHOLDER:
+                pair = f"{country_for_city} — {selected_city_output}"
+                if pair not in st.session_state.city_list_output:
+                    st.session_state.city_list_output.append(pair)
+                    # Salva coordenadas da cidade
+                    lat, lon = find_city_coordinates(country_for_city, selected_city_output)
+                    if lat and lon:
+                        st.session_state.city_coordinates[pair] = (lat, lon)
                 st.rerun()
             elif is_global:
                 st.warning("Cannot add cities for global coverage")
             else:
-                st.warning("Choose a valid country and type a city.")
+                st.warning("Choose a valid country and city.")
 
     if st.session_state.get("city_list_output") and not is_global:
         st.caption("Cities added to OUTPUT:")
         for i, it in enumerate(st.session_state.city_list_output):
             c1, c2 = st.columns([6,1])
-            with c1: st.write(f"- {it}")
+            with c1: 
+                coords = st.session_state.city_coordinates.get(it, (None, None))
+                if coords[0] and coords[1]:
+                    st.write(f"- {it} (📍 {coords[0]:.4f}, {coords[1]:.4f})")
+                else:
+                    st.write(f"- {it}")
             with c2:
                 if st.form_submit_button("Remove", key=f"rm_city_out_{i}"):
-                    st.session_state.city_list_output.pop(i); st.rerun()
+                    st.session_state.city_list_output.pop(i)
+                    if it in st.session_state.city_coordinates:
+                        del st.session_state.city_coordinates[it]
+                    st.rerun()
 
-    # Mapa de previsualização - só se não for Global
+    # Mapa com cidades
     if not is_global and available_countries_for_cities:
-        # CORREÇÃO: Plota todos os países selecionados no mapa
         if available_countries_for_cities:
-            # Usa o primeiro país como centro do mapa
             first_country = available_countries_for_cities[0]
             if first_country in COUNTRY_CENTER_FULL:
                 st.session_state.map_center = COUNTRY_CENTER_FULL[first_country]
@@ -692,7 +768,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                     tiles="CartoDB positron"
                 )
                 
-                # Marca todos os países selecionados
+                # Marca países
                 for country in available_countries_for_cities:
                     if country in COUNTRY_CENTER_FULL:
                         latlon = COUNTRY_CENTER_FULL[country]
@@ -701,22 +777,31 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                             fill=True, fill_opacity=0.9, tooltip=f"{country}"
                         ).add_to(m)
                 
-                # Adiciona marcadores para cidades
+                # Marca cidades com coordenadas específicas
                 for pair in st.session_state.get("city_list_output", []):
                     if "—" in pair:
                         ctry, cty = [p.strip() for p in pair.split("—",1)]
-                        latlon = COUNTRY_CENTER_FULL.get(ctry)
-                        if latlon:
+                        coords = st.session_state.city_coordinates.get(pair, None)
+                        if coords and coords[0] is not None and coords[1] is not None:
+                            # Usa coordenadas específicas da cidade
                             folium.Marker(
-                                location=latlon, 
+                                location=coords, 
                                 tooltip=f"{cty} ({ctry})",
                                 icon=folium.Icon(color="green", icon="info-sign")
                             ).add_to(m)
+                        else:
+                            # Fallback para centro do país
+                            latlon = COUNTRY_CENTER_FULL.get(ctry)
+                            if latlon:
+                                folium.Marker(
+                                    location=latlon, 
+                                    tooltip=f"{cty} ({ctry})",
+                                    icon=folium.Icon(color="orange", icon="info-sign")
+                                ).add_to(m)
                 st_folium(m, height=320, width=None)
     elif is_global:
         st.info("Map preview not available for global coverage")
 
-    # Anos (desc)
     current_year = datetime.utcnow().year
     base_years_desc = list(range(current_year, 1999, -1))
     years_selected = st.multiselect("Year of output release", base_years_desc, key="years_selected")
@@ -731,7 +816,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
     submitted = st.form_submit_button("Submit for review (Output)")
 
     if submitted:
-        # validações
         if not submitter_email.strip():
             st.warning("Please provide the submitter email."); st.stop()
         if not output_title.strip():
@@ -743,23 +827,21 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         if is_other_project and not (st.session_state.get("city_list_output") or st.session_state.get("new_project_countries")):
             st.warning("For a new project (Other), please add at least one country/city."); st.stop()
 
-        # CORREÇÃO: Garante que Data Type fica vazio se não for Dataset
         if output_type_sel != "Dataset":
             output_data_type = ""
 
-        # 1) Se "Other", registrar projeto (fila)
+        # 1) Registrar projeto se for "Other"
         if is_other_project:
             wsP, errP = ws_projects()
             if errP or wsP is None:
                 st.error(errP or "Worksheet unavailable for projects."); st.stop()
             
-            # CORREÇÃO: Cria uma linha por país/cidade
             countries_to_process = st.session_state.get("new_project_countries", [])
             cities_to_process = st.session_state.get("city_list_output", [])
             
             ok_allP, msg_anyP = True, None
             
-            # Processa cada país (sem cidade específica)
+            # Países sem cidades específicas
             for country in countries_to_process:
                 latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
                 rowP = {
@@ -775,11 +857,17 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
                 okP2, msgP2 = _append_row(wsP, PROJECTS_HEADERS, rowP)
                 ok_allP &= okP2; msg_anyP = msgP2
             
-            # Processa cada cidade (com país)
+            # Cidades com coordenadas específicas
             for pair in cities_to_process:
                 if "—" not in pair: continue
                 country, city = [p.strip() for p in pair.split("—",1)]
-                latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
+                # Usa coordenadas da cidade se disponível
+                coords = st.session_state.city_coordinates.get(pair, (None, None))
+                if coords[0] and coords[1]:
+                    latp, lonp = coords
+                else:
+                    latp, lonp = COUNTRY_CENTER_FULL.get(country, (None, None))
+                
                 rowP = {
                     "country": country, "city": city, "lat": latp, "lon": lonp,
                     "project_name": project_tax_other.strip(), "years": "",
@@ -796,22 +884,28 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             if not ok_allP:
                 st.error(f"⚠️ Project staging write error: {msg_anyP}"); st.stop()
 
-        # 2) Grava o output (fila) com lat/lon
+        # 2) Gravar output
         wsO, errO = ws_outputs()
         if errO or wsO is None:
             st.error(errO or "Worksheet unavailable for outputs."); st.stop()
 
-        # CORREÇÃO: Usa o primeiro país para coordenadas (exceto se for Global)
+        # Define coordenadas - prioriza cidades
         lat_o, lon_o = (None, None)
         if not is_global and available_countries_for_cities:
-            first_country = available_countries_for_cities[0]
-            if first_country in COUNTRY_CENTER_FULL:
-                lat_o, lon_o = COUNTRY_CENTER_FULL[first_country]
+            # Tenta usar coordenadas da primeira cidade
+            if st.session_state.get("city_list_output"):
+                first_city = st.session_state.city_list_output[0]
+                coords = st.session_state.city_coordinates.get(first_city, (None, None))
+                if coords[0] and coords[1]:
+                    lat_o, lon_o = coords
+            
+            # Fallback para primeiro país
+            if lat_o is None and available_countries_for_cities:
+                first_country = available_countries_for_cities[0]
+                if first_country in COUNTRY_CENTER_FULL:
+                    lat_o, lon_o = COUNTRY_CENTER_FULL[first_country]
 
-        # CORREÇÃO: Formata cidades como string
         output_cities_str = ", ".join(st.session_state.get("city_list_output", [])) if st.session_state.get("city_list_output") else ""
-
-        # Prepara string de países para armazenamento
         output_countries_str = ", ".join(output_countries)
 
         rowO = {
@@ -819,7 +913,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "output_title": output_title,
             "output_type": ("" if output_type_sel.startswith("Other") else output_type_sel),
             "output_type_other": (output_type_other if output_type_sel.startswith("Other") else ""),
-            "output_data_type": output_data_type,  # Já está vazio se não for Dataset
+            "output_data_type": output_data_type,
             "output_url": output_url,
             "output_country": output_countries_str,
             "output_country_other": (output_country_other if "Other: ______" in output_countries else ""),
@@ -827,7 +921,7 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
             "output_year": final_years_str,
             "output_desc": output_desc,
             "output_contact": output_contact,
-            "output_email": "",  # legado vazio
+            "output_email": "",
             "output_linkedin": output_linkedin,
             "project_url": (project_url_for_output or (st.session_state.get("new_project_url","") if is_other_project else "")),
             "submitter_email": submitter_email,
@@ -840,7 +934,6 @@ with st.form("OUTPUT_FORM", clear_on_submit=False):
         okO2, msgO2 = _append_row(wsO, OUTPUTS_HEADERS, rowO)
         if okO2:
             st.success("✅ Output submission queued for review")
-            # Limpeza completa do estado do formulário
             _really_clear_output_form_state()
             st.session_state._pending_form_reset = True
             st.rerun()
