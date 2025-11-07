@@ -450,10 +450,96 @@ else:
         st.info("No approved outputs with location yet.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8) Browse outputs — seleção + botões Edit / Remove (sem popup)
+# 8) Browse outputs — agregada por “mesmo output” (difere só em cidades)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Browse outputs (approved only)")
+
+def _normalize_city_list(city_cell: str) -> list[str]:
+    """
+    Recebe uma célula de 'output_city' (ex: 'Nigeria — Lagos, Nigeria — Abuja')
+    e retorna lista de tokens únicos limpos, preservando 'País — Cidade' quando vier assim.
+    """
+    if not city_cell:
+        return []
+    parts = [p.strip() for p in city_cell.split(",") if p.strip()]
+    uniq = []
+    seen = set()
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            uniq.append(p)
+    return uniq
+
+def _aggregate_outputs(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Agrega linhas com todos os campos iguais exceto output_city.
+    Mantém lista de sheet_rows originais em 'sheet_rows' (para Edit/Remove).
+    """
+    if df_raw.empty:
+        return df_raw.copy()
+
+    # Campos usados para comparar "mesmo output" (tudo, exceto cidade/coords/sheet_row)
+    ignore_cols = {"output_city", "sheet_row", "lat", "lon"}
+    base_cols = [c for c in df_raw.columns if c not in ignore_cols]
+
+    # Para segurança, limitamos a um subconjunto que de fato define o output,
+    # mas mantendo o que você precisa para ver na UI e para prepopular o form:
+    key_cols = [
+        "project","output_title","output_type","output_type_other","output_data_type",
+        "output_url","output_country","output_country_other","output_year",
+        "output_desc","output_contact","output_linkedin","project_url","submitter_email",
+        "is_edit","edit_target","edit_request","approved","created_at"
+    ]
+    # Garante que existem:
+    key_cols = [c for c in key_cols if c in df_raw.columns]
+    # Se faltar algum (ex: planilha antiga), completa com vazio:
+    for c in key_cols:
+        if c not in df_raw.columns:
+            df_raw[c] = ""
+
+    # Monta chave textual estável para agrupar
+    def _row_key(row):
+        return tuple((row.get(c, "") or "") for c in key_cols)
+
+    groups = {}
+    for _, r in df_raw.iterrows():
+        k = _row_key(r)
+        entry = groups.get(k)
+        cities_here = _normalize_city_list(r.get("output_city",""))
+        if entry is None:
+            groups[k] = {
+                "row_proto": {c: r.get(c, "") for c in key_cols},
+                "cities": cities_here[:],
+                "sheet_rows": [int(r.get("sheet_row")) if str(r.get("sheet_row")).isdigit() else None],
+            }
+        else:
+            # agrega cidades
+            for c in cities_here:
+                if c not in entry["cities"]:
+                    entry["cities"].append(c)
+            # agrega sheet_row
+            sr = int(r.get("sheet_row")) if str(r.get("sheet_row")).isdigit() else None
+            if sr not in entry["sheet_rows"]:
+                entry["sheet_rows"].append(sr)
+
+    # Constrói DataFrame agregado
+    out_records = []
+    for k, bundle in groups.items():
+        rec = dict(bundle["row_proto"])
+        # cidades unificadas (ordena alfabeticamente para estabilidade)
+        cities_sorted = sorted([c for c in bundle["cities"] if c], key=lambda x: x.lower())
+        rec["output_city"] = ", ".join(cities_sorted)
+        # mantém lat/lon como vazio (não exibimos no browser); para editar vamos usar países mesmo
+        rec["sheet_rows"] = [sr for sr in bundle["sheet_rows"] if sr]
+        out_records.append(rec)
+
+    df_ag = pd.DataFrame(out_records)
+    # Ordena por projeto / output_title
+    sort_cols = [c for c in ["project","output_title","output_type","output_country"] if c in df_ag.columns]
+    if sort_cols:
+        df_ag = df_ag.sort_values(sort_cols, kind="stable").reset_index(drop=True)
+    return df_ag
 
 df_outputs, okO, msgO = load_outputs_public()
 if not okO and msgO:
@@ -462,16 +548,19 @@ else:
     if df_outputs.empty:
         st.info("No outputs.")
     else:
-        df_base = df_outputs.reset_index(drop=True).copy()
+        # Agrega (linhas iguais exceto cidades)
+        df_aggr = _aggregate_outputs(df_outputs)
+
+        # Prepara preview: SEM sheet_row
         preview_cols = ["project","output_country","output_city","output_type","output_data_type"]
         for c in preview_cols:
-            if c not in df_base.columns:
-                df_base[c] = ""
+            if c not in df_aggr.columns:
+                df_aggr[c] = ""
 
-        df_preview = df_base[preview_cols + ["sheet_row"]].copy()
+        df_preview = df_aggr[preview_cols].copy()
+
         details_col = "See full information"
         SELECT_COL  = "Select"
-
         df_preview[details_col] = False
         df_preview[SELECT_COL]  = False
 
@@ -481,14 +570,13 @@ else:
             key=editor_key,
             use_container_width=True,
             hide_index=True,
-            disabled=preview_cols + ["sheet_row"],
+            disabled=preview_cols,
             column_config={
                 "project": st.column_config.TextColumn("project"),
                 "output_country": st.column_config.TextColumn("output_country"),
                 "output_city": st.column_config.TextColumn("output_city"),
                 "output_type": st.column_config.TextColumn("output_type"),
                 "output_data_type": st.column_config.TextColumn("output_data_type"),
-                "sheet_row": st.column_config.TextColumn("sheet_row"),
                 details_col: st.column_config.CheckboxColumn(details_col, help="Open details for this row"),
                 SELECT_COL:  st.column_config.CheckboxColumn(SELECT_COL, help="Select one row to edit/remove"),
             }
@@ -512,7 +600,7 @@ else:
                 ("output_data_type","Output data type"),
                 ("output_url","Output URL"),
                 ("output_country","Output country"),
-                ("output_city","Output city"),
+                ("output_city","Output city (aggregated)"),
                 ("output_year","Output year"),
                 ("output_desc","Description"),
                 ("output_contact","Contact"),
@@ -544,36 +632,35 @@ else:
 
         if ss._want_open_dialog:
             idx = ss._selected_output_idx
-            if isinstance(idx, int) and (0 <= idx < len(df_base)):
-                row = df_base.iloc[idx]
+            if isinstance(idx, int) and (0 <= idx < len(df_aggr)):
+                row = df_aggr.iloc[idx]
                 _open_details(row)
             ss._want_open_dialog = False
             ss._selected_output_idx = None
 
-        # seleção única
+        # seleção única (na agregada)
         sel_idxs = [i for i, v in enumerate(edited[SELECT_COL].tolist()) if bool(v)] if SELECT_COL in edited.columns else []
         if sel_idxs:
-            ss._table_selection = int(sel_idxs[0])  # só a primeira seleção
+            ss._table_selection = int(sel_idxs[0])
 
+        # Campo Reason + botões
         st.write("")  # espaçamento
         ss._action_reason = st.text_input("Reason (required for Edit or Remove)", value=ss._action_reason)
-
         colA, colB = st.columns([1,1])
 
-        # ----- EDIT SELECTED -----
+        # ----- EDIT SELECTED (usa primeira sheet_row do grupo) -----
         with colA:
             if st.button("✏️ Edit selected", use_container_width=True):
                 missing = _collect_missing_for_table_action(ss._table_selection, ss._action_reason, "Edit")
                 if missing:
                     _show_missing(missing)
                 else:
-                    base_row = df_base.iloc[ss._table_selection].to_dict()
-                    try:
-                        sheet_row = int(df_base.iloc[ss._table_selection]["sheet_row"])
-                    except Exception:
-                        sheet_row = None
+                    base_row = df_aggr.iloc[ss._table_selection].to_dict()
+                    # pega a primeira linha original como alvo
+                    sheet_rows = df_aggr.iloc[ss._table_selection].get("sheet_rows", [])
+                    sheet_row = int(sheet_rows[0]) if sheet_rows else None
 
-                    # Pré-popula o formulário
+                    # Pré-popula o formulário com cidades agregadas
                     ss[wkey("submitter_email")] = ""  # quem edita informa seu e-mail
                     proj_name = (base_row.get("project") or "").strip()
                     ss[wkey("project_tax_sel")] = proj_name if proj_name in PROJECT_TAXONOMY else "Other: ______"
@@ -585,24 +672,19 @@ else:
                         ss[wkey("output_data_type")] = (base_row.get("output_data_type") or SELECT_PLACEHOLDER)
                     ss[wkey("output_title")] = (base_row.get("output_title") or "")
                     ss[wkey("output_url")]   = (base_row.get("output_url") or "")
-                    # países
+                    # países (em agregada já estão unificados em 1 célula; mantemos como veio)
                     countries = []
                     oc = (base_row.get("output_country") or "").strip()
                     if oc:
                         parts = [p.strip() for p in oc.split(",") if p.strip()]
                         countries = parts if len(parts) > 1 else [oc]
                     ss[wkey("output_countries")] = countries
-                    # cidades
+                    # cidades agregadas
                     ss.form_data["cities"] = []
                     ocity = (base_row.get("output_city") or "").strip()
                     if ocity:
-                        parts = [p.strip() for p in ocity.split(",") if p.strip()]
-                        for p in parts:
-                            if "—" in p:
-                                ss.form_data["cities"].append(p)
-                            else:
-                                base_country = countries[0] if countries else ""
-                                ss.form_data["cities"].append(f"{base_country} — {p}" if base_country else p)
+                        for p in [p.strip() for p in ocity.split(",") if p.strip()]:
+                            ss.form_data["cities"].append(p)
                     # anos
                     years_txt = (base_row.get("output_year") or "").strip()
                     years = []
@@ -628,18 +710,17 @@ else:
                     ss._action_reason = ""
                     st.rerun()
 
-        # ----- REMOVE SELECTED -----
+        # ----- REMOVE SELECTED (gera 1 solicitação usando a primeira sheet_row) -----
         with colB:
             if st.button("🗑️ Remove selected", use_container_width=True):
                 missing = _collect_missing_for_table_action(ss._table_selection, ss._action_reason, "Remove")
                 if missing:
                     _show_missing(missing)
                 else:
-                    base_row = df_base.iloc[ss._table_selection].to_dict()
-                    try:
-                        sheet_row = int(df_base.iloc[ss._table_selection]["sheet_row"])
-                    except Exception:
-                        sheet_row = None
+                    base_row = df_aggr.iloc[ss._table_selection].to_dict()
+                    sheet_rows = df_aggr.iloc[ss._table_selection].get("sheet_rows", [])
+                    sheet_row = int(sheet_rows[0]) if sheet_rows else None
+
                     wsO, errO = ws_outputs()
                     if errO or wsO is None:
                         st.error(errO or "Worksheet unavailable for outputs.")
@@ -653,7 +734,7 @@ else:
                             "output_url": (base_row.get("output_url") or ""),
                             "output_country": (base_row.get("output_country") or ""),
                             "output_country_other": (base_row.get("output_country_other") or ""),
-                            "output_city": (base_row.get("output_city") or ""),
+                            "output_city": (base_row.get("output_city") or ""),  # já agregado
                             "output_year": (base_row.get("output_year") or ""),
                             "output_desc": (base_row.get("output_desc") or ""),
                             "output_contact": (base_row.get("output_contact") or ""),
@@ -666,8 +747,7 @@ else:
                             "edit_request": f"REMOVE REQUEST: {ss._action_reason.strip()}",
                             "approved": "FALSE",
                             "created_at": datetime.utcnow().isoformat(timespec="seconds")+"Z",
-                            "lat": (base_row.get("lat") if pd.notna(base_row.get("lat")) else ""),
-                            "lon": (base_row.get("lon") if pd.notna(base_row.get("lon")) else ""),
+                            "lat": "", "lon": "",
                         }
                         _append_row(wsO, OUTPUTS_HEADERS, rowO)
                         flash("🗑️ Removal request sent for review.", "success")
@@ -1010,4 +1090,6 @@ with col1:
 with col2:
     st.button("🗑️ Clear Form", use_container_width=True, type="secondary",
               on_click=_cb_clear, key=wkey("btn_clear"))
+
+
 
